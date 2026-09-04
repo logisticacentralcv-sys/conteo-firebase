@@ -587,12 +587,23 @@
           }, { merge: true });
 
           if (productoSnap.exists()) {
-            tx.update(productoRef, {
+            const datosActuales = productoSnap.data();
+            const actualizacion = {
               producto: nombreProducto,
               productoLower: nombreProducto.toLowerCase(),
               stockTotal: increment(cantidadEnUnidades),
               ultimaActualizacion: serverTimestamp()
-            });
+            };
+            // Si el producto ya existía en Firestore (por ejemplo, porque
+            // se creó desde el catálogo antes de contarlo nunca) pero
+            // todavía no tenía posición principal, esta primera cuenta
+            // real se la completa. Antes esta rama nunca la tocaba, y
+            // quedaba "Sin posición" en el Armador aunque el stock ya
+            // estuviera cargado.
+            if (!datosActuales.posicionPrincipal) {
+              actualizacion.posicionPrincipal = posicion;
+            }
+            tx.update(productoRef, actualizacion);
           } else {
             tx.set(productoRef, {
               producto: nombreProducto,
