@@ -217,6 +217,7 @@
       <button class="btn btn-secondary" id="btnModoMover" style="display:none;">📍 Modificar posición existente (sin sumar)</button>
       <button class="btn btn-secondary" id="btnAsociarBulto">📦 Asociar código de bulto a este producto</button>
       <button class="btn btn-secondary" id="btnDescartar">Descartar</button>
+      <button class="btn btn-secondary" id="btnEliminarProducto" style="display:none; background:#fee2e2; color:#dc2626;">🗑 Eliminar este producto (borra todo su stock)</button>
 
       <div id="moverPosicionBox" style="display:none; margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
         <div class="field" id="selectorPosicionField" style="display:none;">
@@ -342,6 +343,7 @@
     let modoProveedor = false;
     let proveedorActivo = "";
     let productosDelProveedorActivo = null; // null = sin filtrar (usa Firestore); array = filtrado en memoria
+    let aliasesProveedorActivo = {}; // textoNormalizado -> {codigo, producto} — lo que ya se corrigió antes para este proveedor
     let proveedoresYaListados = false;
 
     const productoBox = document.getElementById('productoBox');
@@ -404,6 +406,7 @@
         const snap = await getDocs(q);
         productosDelProveedorActivo = [];
         snap.forEach(d => productosDelProveedorActivo.push({ codigo: d.id, producto: d.data().producto || '' }));
+        await cargarAliasesProveedor_(proveedorActivo);
         contador.textContent = `${productosDelProveedorActivo.length} producto(s) de este proveedor — buscá por nombre o código acá arriba`;
       } catch (err) {
         contador.textContent = 'Error cargando productos: ' + err.message;
@@ -503,6 +506,56 @@
       return { cantidad: null, resto: linea };
     }
 
+    // Sanitiza para usar como ID de documento de Firestore (nada de "/", límite de largo)
+    function sanitizarIdCliente_(clave) {
+      return String(clave).replace(/\//g, '_').substring(0, 300);
+    }
+
+    // Trae lo que ya se corrigió antes para este proveedor (aprendizaje
+    // simple: cada vez que confirmás una línea, se guarda "este texto de
+    // remito = este producto" — así la próxima vez que aparezca un texto
+    // parecido, ya no hace falta corregirlo a mano).
+    async function cargarAliasesProveedor_(proveedor) {
+      aliasesProveedorActivo = {};
+      try {
+        const q = query(collection(db, 'aliasRemito'), where('proveedor', '==', proveedor));
+        const snap = await getDocs(q);
+        snap.forEach(d => {
+          const data = d.data();
+          aliasesProveedorActivo[data.textoNormalizado] = { codigo: data.codigo, producto: data.producto };
+        });
+      } catch (err) {
+        console.error('Error cargando alias de remito', err);
+      }
+    }
+
+    async function guardarAliasRemito_(proveedor, textoNormalizado, codigo, producto) {
+      if (!proveedor || !textoNormalizado || !codigo) return;
+      try {
+        const id = sanitizarIdCliente_(proveedor + '|' + textoNormalizado);
+        await setDoc(doc(db, 'aliasRemito', id), {
+          proveedor, textoNormalizado, codigo, producto, actualizado: serverTimestamp()
+        }, { merge: true });
+        aliasesProveedorActivo[textoNormalizado] = { codigo, producto }; // disponible ya mismo, sin esperar otra lectura
+      } catch (err) {
+        console.error('Error guardando alias de remito', err);
+      }
+    }
+
+    // Busca primero en lo ya aprendido para este proveedor (exacto, y si
+    // no, que el texto de la línea CONTENGA algún alias guardado — por si
+    // el OCR agrega o saca algún caracter de más). Si no encuentra nada
+    // ahí, recién ahí cae a la heurística genérica por palabras.
+    function buscarAlias_(textoNormalizado) {
+      if (aliasesProveedorActivo[textoNormalizado]) return aliasesProveedorActivo[textoNormalizado];
+      for (const clave in aliasesProveedorActivo) {
+        if (clave.length >= 6 && (textoNormalizado.includes(clave) || clave.includes(textoNormalizado))) {
+          return aliasesProveedorActivo[clave];
+        }
+      }
+      return null;
+    }
+
     // Matchea por cantidad de palabras del producto que aparecen en la
     // línea leída (no exige que coincida todo, ni el orden) — bastante
     // tolerante a que el OCR se coma alguna letra o el remito abrevie.
@@ -526,13 +579,19 @@
       lineas.forEach(linea => {
         const { cantidad, resto } = extraerCantidadDeLinea_(linea);
         if (!cantidad || !resto || resto.length < 3) return; // sin número o sin texto: probablemente encabezado/ruido, se ignora sola
-        const match = mejorMatchProducto_(resto, productosDelProveedorActivo);
+
+        const textoNormalizado = normalizarTexto_(resto);
+        const porAlias = buscarAlias_(textoNormalizado);
+        const match = porAlias || mejorMatchProducto_(resto, productosDelProveedorActivo);
+
         filas.push({
           lineaOriginal: linea,
+          textoNormalizado: textoNormalizado,
           cantidad: cantidad,
           codigo: match ? match.codigo : '',
           producto: match ? match.producto : '',
-          reconocido: !!match
+          reconocido: !!match,
+          porAlias: !!porAlias
         });
       });
       mostrarRevisionRemito_(filas);
@@ -562,6 +621,7 @@
       cont.innerHTML = filasRemitoActual.map((f, idx) => `
         <div style="border:1px solid var(--border); border-radius:10px; padding:10px; margin-bottom:8px; ${f.reconocido ? '' : 'background:#fff7ed; border-color:#fed7aa;'}">
           ${!f.reconocido ? '<div style="color:#ea580c; font-size:11px; font-weight:700; margin-bottom:4px;">⚠ No estoy seguro de cuál es — elegilo a mano</div>' : ''}
+          ${f.reconocido && f.porAlias ? '<div style="color:#16a34a; font-size:11px; font-weight:700; margin-bottom:4px;">✓ Reconocido de una carga anterior</div>' : ''}
           <select id="selectRemito-${idx}" onchange="window.__cambiarProductoRemito(${idx}, this.value)"
             style="width:100%; padding:8px; border:1px solid var(--border); border-radius:8px; font-size:13px; margin-bottom:6px;">
             <option value="">— Ignorar esta línea —</option>
@@ -608,6 +668,7 @@
       for (const f of filasValidas) {
         try {
           await ingresarStockDirecto_(f.codigo, f.producto, f.cantidad);
+          if (f.textoNormalizado) await guardarAliasRemito_(proveedorActivo, f.textoNormalizado, f.codigo, f.producto);
           ok++;
         } catch (err) {
           conError++;
@@ -859,6 +920,7 @@
         document.getElementById('labelCantidad').textContent = 'Cantidad';
         document.getElementById('btnAsociarBulto').style.display = resultado.encontrado ? 'block' : 'none';
       }
+      document.getElementById('btnEliminarProducto').style.display = resultado.encontrado ? 'block' : 'none';
 
       const hintProveedor = document.getElementById('hintPosicionProveedor');
       if (modoProveedor && resultado.posicionPrincipal) {
@@ -1011,6 +1073,48 @@
     function descartarProducto() {
       productoBox.classList.remove('show');
       productoActual = null;
+    }
+
+    // ---------------- ELIMINAR PRODUCTO (restringido por DNI) ----------------
+    // Borra el producto entero de Firestore (documento + todas sus
+    // posiciones) — para sacar de encima algo que se cargó mal (código
+    // escaneado mal, duplicado, etc.). Solo dos DNIs autorizados.
+    const DNI_AUTORIZADOS_ELIMINAR = new Set(['43458682', '43985774']);
+
+    document.getElementById('btnEliminarProducto').addEventListener('click', eliminarProductoActual);
+
+    async function eliminarProductoActual() {
+      if (!productoActual || !productoActual.codigo) return;
+
+      const dni = prompt('Para eliminar este producto, ingresá tu número de documento:');
+      if (dni === null) return; // canceló
+      const dniLimpio = String(dni).trim().replace(/\D/g, '');
+      if (!DNI_AUTORIZADOS_ELIMINAR.has(dniLimpio)) {
+        mostrarToast('No autorizado para eliminar productos', true);
+        return;
+      }
+
+      const codigo = productoActual.codigo;
+      const nombreMostrado = productoActual.producto || document.getElementById('inputNombreManual').value.trim() || codigo;
+      if (!confirm(`¿Seguro que querés eliminar "${nombreMostrado}" (${codigo})?\n\nSe borra TODO su stock y no se puede deshacer.`)) return;
+
+      const btn = document.getElementById('btnEliminarProducto');
+      btn.disabled = true;
+      btn.textContent = 'Eliminando...';
+      try {
+        const posSnap = await getDocs(collection(db, 'productos', codigo, 'posiciones'));
+        for (const d of posSnap.docs) {
+          await deleteDoc(d.ref);
+        }
+        await deleteDoc(doc(db, 'productos', codigo));
+        mostrarToast('Producto eliminado ✓');
+        descartarProducto();
+      } catch (err) {
+        mostrarToast('Error eliminando: ' + err.message, true);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '🗑 Eliminar este producto (borra todo su stock)';
+      }
     }
 
     function agregarASesion(codigo, nombre, posicion, cantidad, totalAcumulado, detalleBulto) {
