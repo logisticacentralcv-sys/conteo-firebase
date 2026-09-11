@@ -153,6 +153,10 @@
       <option value="">Todos los proveedores (sin filtrar)</option>
     </select>
     <div id="contadorProveedorActivo" style="font-size:11px; font-weight:400; margin-top:4px;"></div>
+    <div id="bloqueLeerRemito" style="display:none; margin-top:10px;">
+      <input type="file" id="inputFotoRemito" accept="image/*" capture="environment" style="display:none;">
+      <button class="btn btn-primary" id="btnLeerRemito" style="margin-top:0; background:#1d4ed8;">📷 Leer foto de remito</button>
+    </div>
   </div>
 
   <div class="container">
@@ -274,6 +278,16 @@
     <button class="btn btn-secondary" id="btnVerStock">📊 Ver stock</button>
   </div>
 
+  <div class="modal-overlay" id="modalRevisionRemito">
+    <div class="modal">
+      <h2>📋 Revisá antes de ingresar</h2>
+      <p style="font-size:12px; color:var(--muted); margin-top:-8px; margin-bottom:12px;">Esto todavía <strong>NO</strong> impactó en el stock. Corregí lo que haga falta (producto y cantidad) y confirmá abajo.</p>
+      <div id="revisionRemitoContenido"></div>
+      <button class="btn btn-success" id="btnAceptarRemito">✔ Aceptar e ingresar</button>
+      <button class="btn btn-secondary" onclick="cerrarModal('modalRevisionRemito')">Cancelar (no ingresar nada)</button>
+    </div>
+  </div>
+
   <div class="modal-overlay" id="modalStock">
     <div class="modal">
       <h2>Stock actual</h2>
@@ -301,6 +315,17 @@
       messagingSenderId: "713677759926",
       appId: "1:713677759926:web:e0a8f512d79f75f2a5cd17"
     };
+
+    // ⚠️ CONFIGURACIÓN: clave de API de Google Cloud Vision, del MISMO
+    // proyecto de Firebase (armador-de-pedidos-secos-119b3). Pasos:
+    // 1) Google Cloud Console > el proyecto > "APIs y servicios" > "Biblioteca"
+    //    > buscar "Cloud Vision API" > Habilitar.
+    // 2) "APIs y servicios" > "Credenciales" > "Crear credenciales" > "Clave de API".
+    // 3) Restringila: "Restricciones de la aplicación" > "Sitios web" > agregar
+    //    el dominio donde vive esta app (ej: https://logisticacentralcv-sys.github.io/*).
+    //    "Restricciones de API" > limitarla solo a "Cloud Vision API".
+    // 4) Pegá la clave acá abajo, reemplazando el texto de ejemplo.
+    const VISION_API_KEY = "PEGAR_ACA_LA_CLAVE_DE_VISION_API";
 
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
@@ -365,6 +390,7 @@
     document.getElementById('selectProveedorActivo').addEventListener('change', async (e) => {
       proveedorActivo = e.target.value;
       const contador = document.getElementById('contadorProveedorActivo');
+      document.getElementById('bloqueLeerRemito').style.display = proveedorActivo ? 'block' : 'none';
       if (!proveedorActivo) {
         productosDelProveedorActivo = null;
         contador.textContent = '';
@@ -382,6 +408,254 @@
         productosDelProveedorActivo = null;
       }
     });
+
+    // ---------------- LEER FOTO DE REMITO (Google Cloud Vision) ----------------
+    // Flujo: foto -> OCR (texto crudo) -> se intenta separar cada línea en
+    // "cantidad" + "descripción" -> se matchea la descripción contra los
+    // productos del proveedor elegido -> se muestra una lista editable
+    // ANTES de tocar Firestore. Nada impacta en stock hasta tocar "Aceptar".
+    let filasRemitoActual = [];
+
+    document.getElementById('btnLeerRemito').addEventListener('click', () => {
+      document.getElementById('inputFotoRemito').click();
+    });
+
+    document.getElementById('inputFotoRemito').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      e.target.value = ''; // permite volver a elegir la misma foto después
+      if (file) leerRemitoDesdeFoto(file);
+    });
+
+    function leerArchivoComoBase64_(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function leerRemitoDesdeFoto(file) {
+      if (!proveedorActivo || !productosDelProveedorActivo) {
+        mostrarToast('Elegí primero un proveedor arriba', true);
+        return;
+      }
+      if (VISION_API_KEY.indexOf('PEGAR_ACA') === 0) {
+        mostrarToast('Falta configurar la clave de Google Cloud Vision en el código', true);
+        return;
+      }
+      const btn = document.getElementById('btnLeerRemito');
+      btn.disabled = true;
+      btn.textContent = 'Leyendo foto...';
+      try {
+        const base64 = await leerArchivoComoBase64_(file);
+        const respuesta = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${VISION_API_KEY}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            requests: [{
+              image: { content: base64 },
+              features: [{ type: 'DOCUMENT_TEXT_DETECTION' }]
+            }]
+          })
+        });
+        const data = await respuesta.json();
+        if (data.error) throw new Error(data.error.message || 'Error de Vision API');
+        const resp0 = data.responses && data.responses[0];
+        if (resp0 && resp0.error) throw new Error(resp0.error.message || 'Error leyendo la imagen');
+        const textoCompleto = (resp0 && resp0.fullTextAnnotation) ? resp0.fullTextAnnotation.text : '';
+        if (!textoCompleto) {
+          mostrarToast('No se detectó texto en la foto', true);
+          return;
+        }
+        procesarTextoRemito_(textoCompleto);
+      } catch (err) {
+        mostrarToast('Error leyendo la foto: ' + err.message, true);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '📷 Leer foto de remito';
+      }
+    }
+
+    // Saca tildes, pasa a minúsculas y deja solo letras/números/espacios —
+    // para poder comparar texto de OCR (que suele venir con ruido) contra
+    // los nombres de productos del catálogo sin que un acento de más rompa
+    // la comparación.
+    function normalizarTexto_(s) {
+      return String(s || '')
+        .toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    // Busca un número "suelto" (la cantidad) al principio o al final de la
+    // línea, y devuelve el resto como texto de descripción. Los remitos
+    // suelen tener la cantidad en una punta y la descripción en el medio.
+    function extraerCantidadDeLinea_(linea) {
+      const matchFin = linea.match(/\b(\d{1,4})$/);
+      if (matchFin) return { cantidad: parseInt(matchFin[1], 10), resto: linea.slice(0, matchFin.index).trim() };
+      const matchInicio = linea.match(/^(\d{1,4})\b/);
+      if (matchInicio) return { cantidad: parseInt(matchInicio[1], 10), resto: linea.slice(matchInicio[0].length).trim() };
+      return { cantidad: null, resto: linea };
+    }
+
+    // Matchea por cantidad de palabras del producto que aparecen en la
+    // línea leída (no exige que coincida todo, ni el orden) — bastante
+    // tolerante a que el OCR se coma alguna letra o el remito abrevie.
+    function mejorMatchProducto_(textoLinea, listaProductos) {
+      const normLinea = ' ' + normalizarTexto_(textoLinea) + ' ';
+      let mejor = null, mejorPuntaje = 0;
+      listaProductos.forEach(p => {
+        const tokensProducto = normalizarTexto_(p.producto).split(' ').filter(t => t.length >= 3);
+        if (!tokensProducto.length) return;
+        let coincidencias = 0;
+        tokensProducto.forEach(t => { if (normLinea.includes(' ' + t + ' ') || normLinea.includes(' ' + t)) coincidencias++; });
+        const puntaje = coincidencias / tokensProducto.length;
+        if (puntaje > mejorPuntaje) { mejorPuntaje = puntaje; mejor = p; }
+      });
+      return (mejor && mejorPuntaje >= 0.5) ? mejor : null;
+    }
+
+    function procesarTextoRemito_(texto) {
+      const lineas = texto.split('\n').map(l => l.trim()).filter(l => l.length > 2);
+      const filas = [];
+      lineas.forEach(linea => {
+        const { cantidad, resto } = extraerCantidadDeLinea_(linea);
+        if (!cantidad || !resto || resto.length < 3) return; // sin número o sin texto: probablemente encabezado/ruido, se ignora sola
+        const match = mejorMatchProducto_(resto, productosDelProveedorActivo);
+        filas.push({
+          lineaOriginal: linea,
+          cantidad: cantidad,
+          codigo: match ? match.codigo : '',
+          producto: match ? match.producto : '',
+          reconocido: !!match
+        });
+      });
+      mostrarRevisionRemito_(filas);
+    }
+
+    function mostrarRevisionRemito_(filas) {
+      filasRemitoActual = filas;
+      renderizarRevisionRemito_();
+      document.getElementById('modalRevisionRemito').classList.add('show');
+    }
+
+    function renderizarRevisionRemito_() {
+      const cont = document.getElementById('revisionRemitoContenido');
+      const btnAceptar = document.getElementById('btnAceptarRemito');
+      if (!filasRemitoActual.length) {
+        cont.innerHTML = '<div class="empty-state">No se detectó ninguna línea con cantidad + descripción. Probá con otra foto: más derecha, con buena luz y sin sombras.</div>';
+        btnAceptar.style.display = 'none';
+        return;
+      }
+      btnAceptar.style.display = 'block';
+      const validas = filasRemitoActual.filter(f => f.codigo && f.cantidad > 0).length;
+      btnAceptar.textContent = `✔ Aceptar e ingresar (${validas})`;
+
+      const opciones = productosDelProveedorActivo
+        .map(p => `<option value="${escapeAttrJs(p.codigo)}">${escapeHtml(p.producto)}</option>`).join('');
+
+      cont.innerHTML = filasRemitoActual.map((f, idx) => `
+        <div style="border:1px solid var(--border); border-radius:10px; padding:10px; margin-bottom:8px; ${f.reconocido ? '' : 'background:#fff7ed; border-color:#fed7aa;'}">
+          ${!f.reconocido ? '<div style="color:#ea580c; font-size:11px; font-weight:700; margin-bottom:4px;">⚠ No estoy seguro de cuál es — elegilo a mano</div>' : ''}
+          <select id="selectRemito-${idx}" onchange="window.__cambiarProductoRemito(${idx}, this.value)"
+            style="width:100%; padding:8px; border:1px solid var(--border); border-radius:8px; font-size:13px; margin-bottom:6px;">
+            <option value="">— Ignorar esta línea —</option>
+            ${opciones}
+          </select>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <label style="font-size:12px; color:var(--muted);">Cantidad:</label>
+            <input type="number" min="0" value="${f.cantidad}" onchange="window.__cambiarCantidadRemito(${idx}, this.value)"
+              style="width:80px; padding:6px; border:1px solid var(--border); border-radius:8px;">
+          </div>
+          <div style="font-size:11px; color:var(--muted); margin-top:6px; font-style:italic;">Detectado: "${escapeHtml(f.lineaOriginal)}"</div>
+        </div>
+      `).join('');
+
+      filasRemitoActual.forEach((f, idx) => {
+        if (f.codigo) document.getElementById(`selectRemito-${idx}`).value = f.codigo;
+      });
+    }
+
+    window.__cambiarProductoRemito = function(idx, codigo) {
+      const p = productosDelProveedorActivo.find(x => x.codigo === codigo);
+      filasRemitoActual[idx].codigo = codigo;
+      filasRemitoActual[idx].producto = p ? p.producto : '';
+      filasRemitoActual[idx].reconocido = !!codigo;
+      const validas = filasRemitoActual.filter(f => f.codigo && f.cantidad > 0).length;
+      document.getElementById('btnAceptarRemito').textContent = `✔ Aceptar e ingresar (${validas})`;
+    };
+
+    window.__cambiarCantidadRemito = function(idx, valor) {
+      filasRemitoActual[idx].cantidad = parseInt(valor, 10) || 0;
+      const validas = filasRemitoActual.filter(f => f.codigo && f.cantidad > 0).length;
+      document.getElementById('btnAceptarRemito').textContent = `✔ Aceptar e ingresar (${validas})`;
+    };
+
+    document.getElementById('btnAceptarRemito').addEventListener('click', async () => {
+      const filasValidas = filasRemitoActual.filter(f => f.codigo && f.cantidad > 0);
+      if (!filasValidas.length) { mostrarToast('No hay ninguna línea válida para ingresar', true); return; }
+
+      const btn = document.getElementById('btnAceptarRemito');
+      btn.disabled = true;
+      btn.textContent = 'Ingresando...';
+
+      let ok = 0, conError = 0;
+      for (const f of filasValidas) {
+        try {
+          await ingresarStockDirecto_(f.codigo, f.producto, f.cantidad);
+          ok++;
+        } catch (err) {
+          conError++;
+          console.error('Error ingresando fila de remito', f, err);
+        }
+      }
+
+      btn.disabled = false;
+      document.getElementById('modalRevisionRemito').classList.remove('show');
+      mostrarToast(`✔ Ingresados ${ok} producto(s)` + (conError ? ` — ${conError} con error` : ''), conError > 0 && ok === 0);
+    });
+
+    // Misma lógica que la transacción de confirmarConteo, pero sin pedir
+    // posición: usa la posición principal ya guardada, o "SIN UBICAR" si
+    // el producto todavía no tiene ninguna (se puede corregir después con
+    // el ✏️ del Armador o recontándolo).
+    async function ingresarStockDirecto_(codigo, nombreProducto, cantidadEnUnidades) {
+      const resultado = await runTransaction(db, async (tx) => {
+        const productoRef = doc(db, 'productos', codigo);
+        const productoSnap = await tx.get(productoRef);
+        const posicion = (productoSnap.exists() && productoSnap.data().posicionPrincipal) || 'SIN UBICAR';
+        const posRef = doc(db, 'productos', codigo, 'posiciones', posicion);
+        const posSnap = await tx.get(posRef);
+        const cantidadAnterior = posSnap.exists() ? (posSnap.data().cantidad || 0) : 0;
+        const nuevaCantidadPosicion = cantidadAnterior + cantidadEnUnidades;
+
+        tx.set(posRef, {
+          codigo: codigo, producto: nombreProducto, cantidad: nuevaCantidadPosicion, ultimaActualizacion: serverTimestamp()
+        }, { merge: true });
+
+        if (productoSnap.exists()) {
+          const datosActuales = productoSnap.data();
+          const actualizacion = {
+            producto: nombreProducto, productoLower: nombreProducto.toLowerCase(),
+            stockTotal: increment(cantidadEnUnidades), ultimaActualizacion: serverTimestamp()
+          };
+          if (!datosActuales.posicionPrincipal) actualizacion.posicionPrincipal = posicion;
+          tx.update(productoRef, actualizacion);
+        } else {
+          tx.set(productoRef, {
+            producto: nombreProducto, productoLower: nombreProducto.toLowerCase(),
+            stockMinimo: null, codigoInterno: null, stockTotal: cantidadEnUnidades,
+            posicionPrincipal: posicion, ultimaActualizacion: serverTimestamp()
+          });
+        }
+        return { posicion, cantidadTotal: nuevaCantidadPosicion };
+      });
+
+      agregarASesion(codigo, nombreProducto, resultado.posicion, cantidadEnUnidades, resultado.cantidadTotal, 'Remito (foto)');
+    }
 
     // ---------------- ESCANEO ----------------
     document.getElementById('btnEscanear').addEventListener('click', iniciarEscaneo);
