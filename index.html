@@ -138,9 +138,18 @@
 <body>
 
   <header>
-    <h1>📦 Conteo de Stock</h1>
-    <p id="subtitulo">Depósito — registro provisorio (Firestore)</p>
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+      <div>
+        <h1>📦 Conteo de Stock</h1>
+        <p id="subtitulo">Depósito — registro provisorio (Firestore)</p>
+      </div>
+      <button id="btnModoProveedor" style="flex-shrink:0; background:rgba(255,255,255,0.18); border:none; color:white; border-radius:8px; padding:10px 12px; font-size:13px; font-weight:700; cursor:pointer;">🚚 Ingreso proveedor</button>
+    </div>
   </header>
+
+  <div id="bannerModoProveedor" style="display:none; background:#fef3c7; color:#92400e; text-align:center; padding:8px 12px; font-size:13px; font-weight:700;">
+    🚚 MODO INGRESO DE PROVEEDOR ACTIVO — se suma directo a la posición principal de cada producto
+  </div>
 
   <div class="container">
 
@@ -182,6 +191,7 @@
       <div class="field">
         <label>Posición (estantería / pasillo / etc.)</label>
         <input type="text" id="inputPosicion" placeholder="Ej: A-03">
+        <div id="hintPosicionProveedor" style="display:none; font-size:11px; color:#92400e; margin-top:4px;">📍 Es la posición principal ya guardada de este producto. Se puede corregir si hace falta.</div>
       </div>
 
       <div class="field">
@@ -248,7 +258,7 @@
     <!-- LISTA DE LA SESIÓN -->
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <strong>Contado en esta sesión</strong>
+        <strong id="tituloSesion">Contado en esta sesión</strong>
         <span id="totalSesion" style="color:var(--muted); font-size:13px;">0 productos</span>
       </div>
       <div id="listaSesion"><div class="empty-state">Todavía no escaneaste nada</div></div>
@@ -299,8 +309,27 @@
     let esBultoActual = false;
     let unidadesPorBultoActual = 1;
     let posicionesDisponibles = [];
+    let modoProveedor = false;
 
     const productoBox = document.getElementById('productoBox');
+
+    // ---------------- MODO INGRESO DE PROVEEDOR ----------------
+    // En este modo, en vez de pedir la posición (como en el conteo normal,
+    // donde tiene sentido ir físicamente pasillo por pasillo), se suma
+    // directo a la posición principal que el producto ya tenga guardada —
+    // así cargar un remito es escanear + cantidad, sin pensar en dónde va.
+    // Si el producto es nuevo (nunca se contó, no tiene posición principal
+    // todavía), simplemente pide la posición como en el modo normal.
+    document.getElementById('btnModoProveedor').addEventListener('click', () => {
+      modoProveedor = !modoProveedor;
+      const btn = document.getElementById('btnModoProveedor');
+      const banner = document.getElementById('bannerModoProveedor');
+      banner.style.display = modoProveedor ? 'block' : 'none';
+      btn.style.background = modoProveedor ? '#f59e0b' : 'rgba(255,255,255,0.18)';
+      document.getElementById('tituloSesion').textContent = modoProveedor ? 'Ingresado de proveedor en esta sesión' : 'Contado en esta sesión';
+      document.getElementById('btnConfirmar').textContent = modoProveedor ? '🚚 Sumar ingreso' : '✔ Confirmar y guardar';
+      if (productoActual) mostrarProducto(productoActual); // recalcula posición sugerida si hay un producto abierto
+    });
 
     // ---------------- ESCANEO ----------------
     document.getElementById('btnEscanear').addEventListener('click', iniciarEscaneo);
@@ -420,7 +449,7 @@
           const stock = await obtenerStockDeProducto(codigo);
           mostrarProducto({
             encontrado: true, esBulto: false, codigo: codigo,
-            producto: data.producto, stock: stock
+            producto: data.producto, stock: stock, posicionPrincipal: data.posicionPrincipal || null
           });
           return;
         }
@@ -432,11 +461,12 @@
           const b = bultoSnap.data();
           const baseSnap = await getDoc(doc(db, 'productos', b.codigoBase));
           const productoNombre = baseSnap.exists() ? baseSnap.data().producto : b.producto;
+          const posicionPrincipalBase = baseSnap.exists() ? (baseSnap.data().posicionPrincipal || null) : null;
           const stock = await obtenerStockDeProducto(b.codigoBase);
           mostrarProducto({
             encontrado: true, esBulto: true, codigo: b.codigoBase,
             codigoBultoEscaneado: codigo, producto: productoNombre,
-            unidadesPorBulto: b.unidadesPorBulto, stock: stock
+            unidadesPorBulto: b.unidadesPorBulto, stock: stock, posicionPrincipal: posicionPrincipalBase
           });
           return;
         }
@@ -490,7 +520,14 @@
         document.getElementById('btnAsociarBulto').style.display = resultado.encontrado ? 'block' : 'none';
       }
 
-      document.getElementById('inputPosicion').value = ultimaPosicion;
+      const hintProveedor = document.getElementById('hintPosicionProveedor');
+      if (modoProveedor && resultado.posicionPrincipal) {
+        document.getElementById('inputPosicion').value = resultado.posicionPrincipal;
+        hintProveedor.style.display = 'block';
+      } else {
+        document.getElementById('inputPosicion').value = ultimaPosicion;
+        hintProveedor.style.display = 'none';
+      }
       document.getElementById('inputCantidad').value = 1;
       actualizarEquivalenciaBulto();
       renderStockActual(resultado.stock);
