@@ -153,9 +153,10 @@
       <option value="">Todos los proveedores (sin filtrar)</option>
     </select>
     <div id="contadorProveedorActivo" style="font-size:11px; font-weight:400; margin-top:4px;"></div>
-    <div id="bloqueLeerRemito" style="display:none; margin-top:10px;">
+    <div id="bloqueLeerRemito" style="margin-top:10px;">
       <input type="file" id="inputFotoRemito" accept="image/*" capture="environment" style="display:none;">
-      <button class="btn btn-primary" id="btnLeerRemito" style="margin-top:0; background:#1d4ed8;">📷 Leer foto de remito</button>
+      <button class="btn btn-primary" id="btnLeerRemito" style="margin-top:0; background:#1d4ed8;" disabled>📷 Leer foto de remito</button>
+      <div id="hintLeerRemito" style="font-size:11px; color:#92400e; margin-top:4px; text-align:center;">⬆ Elegí un proveedor de la lista de arriba para poder subir la foto</div>
     </div>
   </div>
 
@@ -390,7 +391,8 @@
     document.getElementById('selectProveedorActivo').addEventListener('change', async (e) => {
       proveedorActivo = e.target.value;
       const contador = document.getElementById('contadorProveedorActivo');
-      document.getElementById('bloqueLeerRemito').style.display = proveedorActivo ? 'block' : 'none';
+      document.getElementById('btnLeerRemito').disabled = !proveedorActivo;
+      document.getElementById('hintLeerRemito').style.display = proveedorActivo ? 'none' : 'block';
       if (!proveedorActivo) {
         productosDelProveedorActivo = null;
         contador.textContent = '';
