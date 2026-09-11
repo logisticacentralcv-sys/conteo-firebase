@@ -147,8 +147,12 @@
     </div>
   </header>
 
-  <div id="bannerModoProveedor" style="display:none; background:#fef3c7; color:#92400e; text-align:center; padding:8px 12px; font-size:13px; font-weight:700;">
-    🚚 MODO INGRESO DE PROVEEDOR ACTIVO — se suma directo a la posición principal de cada producto
+  <div id="bannerModoProveedor" style="display:none; background:#fef3c7; color:#92400e; padding:10px 12px; font-size:13px; font-weight:700;">
+    <div style="text-align:center; margin-bottom:8px;">🚚 MODO INGRESO DE PROVEEDOR ACTIVO — se suma directo a la posición principal de cada producto</div>
+    <select id="selectProveedorActivo" style="width:100%; padding:10px; border:1px solid #fde68a; border-radius:8px; font-size:14px; font-weight:600; color:#92400e; background:white;">
+      <option value="">Todos los proveedores (sin filtrar)</option>
+    </select>
+    <div id="contadorProveedorActivo" style="font-size:11px; font-weight:400; margin-top:4px;"></div>
   </div>
 
   <div class="container">
@@ -310,6 +314,9 @@
     let unidadesPorBultoActual = 1;
     let posicionesDisponibles = [];
     let modoProveedor = false;
+    let proveedorActivo = "";
+    let productosDelProveedorActivo = null; // null = sin filtrar (usa Firestore); array = filtrado en memoria
+    let proveedoresYaListados = false;
 
     const productoBox = document.getElementById('productoBox');
 
@@ -328,7 +335,52 @@
       btn.style.background = modoProveedor ? '#f59e0b' : 'rgba(255,255,255,0.18)';
       document.getElementById('tituloSesion').textContent = modoProveedor ? 'Ingresado de proveedor en esta sesión' : 'Contado en esta sesión';
       document.getElementById('btnConfirmar').textContent = modoProveedor ? '🚚 Sumar ingreso' : '✔ Confirmar y guardar';
+      if (modoProveedor && !proveedoresYaListados) cargarListaProveedores();
       if (productoActual) mostrarProducto(productoActual); // recalcula posición sugerida si hay un producto abierto
+    });
+
+    async function cargarListaProveedores() {
+      proveedoresYaListados = true;
+      try {
+        const snap = await getDocs(collection(db, 'proveedores'));
+        const nombres = [];
+        snap.forEach(d => nombres.push(d.data().nombre || d.id));
+        nombres.sort((a, b) => a.localeCompare(b, 'es'));
+        const select = document.getElementById('selectProveedorActivo');
+        nombres.forEach(nombre => {
+          const opt = document.createElement('option');
+          opt.value = nombre;
+          opt.textContent = nombre;
+          select.appendChild(opt);
+        });
+      } catch (err) {
+        console.error('Error cargando proveedores', err);
+      }
+    }
+
+    // Al elegir un proveedor, se traen sus productos UNA vez (consulta
+    // simple por igualdad, sin índice compuesto) y de ahí en más la
+    // búsqueda por nombre/EAN se filtra en el navegador — no hace falta
+    // volver a pedirle nada a Firestore mientras se escribe.
+    document.getElementById('selectProveedorActivo').addEventListener('change', async (e) => {
+      proveedorActivo = e.target.value;
+      const contador = document.getElementById('contadorProveedorActivo');
+      if (!proveedorActivo) {
+        productosDelProveedorActivo = null;
+        contador.textContent = '';
+        return;
+      }
+      contador.textContent = 'Cargando productos de ese proveedor...';
+      try {
+        const q = query(collection(db, 'productos'), where('proveedor', '==', proveedorActivo));
+        const snap = await getDocs(q);
+        productosDelProveedorActivo = [];
+        snap.forEach(d => productosDelProveedorActivo.push({ codigo: d.id, producto: d.data().producto || '' }));
+        contador.textContent = `${productosDelProveedorActivo.length} producto(s) de este proveedor — buscá por nombre o código acá arriba`;
+      } catch (err) {
+        contador.textContent = 'Error cargando productos: ' + err.message;
+        productosDelProveedorActivo = null;
+      }
     });
 
     // ---------------- ESCANEO ----------------
@@ -394,6 +446,18 @@
 
     async function buscarSugerencias(texto) {
       const textoLower = texto.toLowerCase();
+
+      // Con un proveedor elegido, se busca en memoria (contiene, no solo
+      // prefijo) sobre lo que ya se trajo al elegirlo — permite matchear
+      // tanto por parte del nombre como por el EAN.
+      if (productosDelProveedorActivo) {
+        const resultados = productosDelProveedorActivo
+          .filter(p => p.producto.toLowerCase().includes(textoLower) || p.codigo.includes(texto))
+          .slice(0, 10);
+        renderizarSugerencias(resultados);
+        return;
+      }
+
       try {
         const q = query(
           collection(db, 'productos'),
