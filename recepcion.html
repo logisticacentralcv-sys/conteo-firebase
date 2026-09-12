@@ -250,11 +250,13 @@
         const textoNormalizado = normalizarTexto_(resto);
         const porAlias = buscarAlias_(textoNormalizado);
         const match = porAlias || mejorMatchProducto_(resto, productosDelProveedor);
-        if (!match) return; // en esta pantalla, si no se reconoce ningún producto, se ignora la línea (es de revisión gerencial, no hay edición manual fila por fila)
+        // Ya no se descarta si no matchea — se guarda igual (con codigo vacío)
+        // para poder MOSTRAR qué se extrajo y por qué no se reconoció, en vez
+        // de que la pantalla diga "0 reconocidos" sin dar ninguna pista.
         filas.push({
-          codigo: match.codigo, producto: match.producto, cantidad: cantidad,
+          codigo: match ? match.codigo : '', producto: match ? match.producto : '', cantidad: cantidad,
           unidad: unidad, revisarUnidad: unidadRequiereRevision_(unidad),
-          lineaOriginal: linea, textoNormalizado
+          lineaOriginal: linea, textoNormalizado, reconocido: !!match
         });
       });
       return filas;
@@ -372,7 +374,11 @@
         if (!texto) throw new Error('No se detectó texto en el archivo');
         const filas = procesarTextoAFilas_(texto);
         if (tipo === 'oc') ordenCompraFilas = filas; else remitoFilas = filas;
-        document.getElementById(estadoId).textContent = `✓ ${filas.length} producto(s) reconocido(s)`;
+        const reconocidos = filas.filter(f => f.reconocido).length;
+        const sinReconocer = filas.length - reconocidos;
+        document.getElementById(estadoId).textContent = sinReconocer
+          ? `✓ ${reconocidos} reconocido(s) — ⚠ ${sinReconocer} sin reconocer (ver detalle abajo)`
+          : `✓ ${reconocidos} producto(s) reconocido(s)`;
         document.getElementById(bloqueId).classList.add('ok');
         renderizarComparacion_();
       } catch (err) {
@@ -393,11 +399,11 @@
       }
 
       const porCodigo = {};
-      ordenCompraFilas.forEach(f => {
+      ordenCompraFilas.filter(f => f.reconocido).forEach(f => {
         if (!porCodigo[f.codigo]) porCodigo[f.codigo] = { codigo: f.codigo, producto: f.producto, pedido: 0, remito: null, unidadPedido: f.unidad, unidadRemito: null };
         porCodigo[f.codigo].pedido += f.cantidad;
       });
-      remitoFilas.forEach(f => {
+      remitoFilas.filter(f => f.reconocido).forEach(f => {
         if (!porCodigo[f.codigo]) porCodigo[f.codigo] = { codigo: f.codigo, producto: f.producto, pedido: null, remito: 0, unidadPedido: null, unidadRemito: f.unidad };
         if (porCodigo[f.codigo].remito === null) porCodigo[f.codigo].remito = 0;
         porCodigo[f.codigo].remito += f.cantidad;
@@ -406,25 +412,50 @@
 
       const filas = Object.values(porCodigo).sort((a, b) => (a.producto || '').localeCompare(b.producto || '', 'es'));
 
-      let html = '<table><tr><th>Producto</th><th>Pedido</th><th>Remito</th><th>Estado</th></tr>';
-      filas.forEach(f => {
-        let badge;
-        if (f.pedido === null) badge = '<span class="badge badge-noesp">🔴 No estaba en la orden</span>';
-        else if (f.remito === null) badge = '<span class="badge badge-falta">🟡 Falta en el remito</span>';
-        else if (f.remito === f.pedido) badge = '<span class="badge badge-ok">✅ Coincide</span>';
-        else badge = `<span class="badge badge-warn">⚠ Diferencia (${f.remito > f.pedido ? '+' : ''}${f.remito - f.pedido})</span>`;
+      let html = '';
+      if (!filas.length) {
+        html += '<div class="empty-state">No se reconoció ningún producto todavía — mirá el detalle de líneas sin reconocer más abajo.</div>';
+      } else {
+        html += '<table><tr><th>Producto</th><th>Pedido</th><th>Remito</th><th>Estado</th></tr>';
+        filas.forEach(f => {
+          let badge;
+          if (f.pedido === null) badge = '<span class="badge badge-noesp">🔴 No estaba en la orden</span>';
+          else if (f.remito === null) badge = '<span class="badge badge-falta">🟡 Falta en el remito</span>';
+          else if (f.remito === f.pedido) badge = '<span class="badge badge-ok">✅ Coincide</span>';
+          else badge = `<span class="badge badge-warn">⚠ Diferencia (${f.remito > f.pedido ? '+' : ''}${f.remito - f.pedido})</span>`;
 
-        const notaUnidad = (unidadRequiereRevision_(f.unidadPedido) || unidadRequiereRevision_(f.unidadRemito))
-          ? `<div style="color:#9333ea; font-size:11px; margin-top:2px;">📦 En ${escapeHtml(f.unidadPedido || f.unidadRemito)}, no en unidades sueltas</div>` : '';
+          const notaUnidad = (unidadRequiereRevision_(f.unidadPedido) || unidadRequiereRevision_(f.unidadRemito))
+            ? `<div style="color:#9333ea; font-size:11px; margin-top:2px;">📦 En ${escapeHtml(f.unidadPedido || f.unidadRemito)}, no en unidades sueltas</div>` : '';
 
-        html += `<tr>
-          <td>${escapeHtml(f.producto)}<div style="color:var(--muted); font-size:11px;">${escapeHtml(f.codigo)}</div>${repartoTextoParaCodigo_(f.codigo)}${notaUnidad}</td>
-          <td>${f.pedido === null ? '—' : f.pedido}</td>
-          <td>${f.remito === null ? '—' : f.remito}</td>
-          <td>${badge}</td>
-        </tr>`;
-      });
-      html += '</table>';
+          html += `<tr>
+            <td>${escapeHtml(f.producto)}<div style="color:var(--muted); font-size:11px;">${escapeHtml(f.codigo)}</div>${repartoTextoParaCodigo_(f.codigo)}${notaUnidad}</td>
+            <td>${f.pedido === null ? '—' : f.pedido}</td>
+            <td>${f.remito === null ? '—' : f.remito}</td>
+            <td>${badge}</td>
+          </tr>`;
+        });
+        html += '</table>';
+      }
+
+      // Líneas que sí tenían cantidad + texto, pero no matchearon ningún
+      // producto del proveedor elegido — se muestran crudas para poder
+      // diagnosticar (¿el proveedor está bien elegido? ¿el producto no
+      // está asociado a este proveedor en Firestore? ¿el nombre es muy
+      // distinto al del catálogo?).
+      const sinReconocerOC = ordenCompraFilas.filter(f => !f.reconocido);
+      const sinReconocerRemito = remitoFilas.filter(f => !f.reconocido);
+      if (sinReconocerOC.length || sinReconocerRemito.length) {
+        html += '<div style="margin-top:16px; padding:12px; background:#fef2f2; border:1px solid #fecaca; border-radius:10px;">';
+        html += `<div style="font-weight:700; color:#dc2626; margin-bottom:6px;">⚠ Sin reconocer (${sinReconocerOC.length + sinReconocerRemito.length})</div>`;
+        html += '<div style="font-size:12px; color:var(--muted); margin-bottom:8px;">No encontré ningún producto de este proveedor que coincida. Puede ser que el proveedor elegido no sea el correcto, o que estos productos todavía no tengan el campo "proveedor" cargado en Firestore.</div>';
+        [...sinReconocerOC.map(f => ({ ...f, origen: 'Orden de Compra' })), ...sinReconocerRemito.map(f => ({ ...f, origen: 'Remito' }))].forEach(f => {
+          html += `<div style="font-size:12px; padding:4px 0; border-top:1px solid #fecaca;">
+            <strong>[${f.origen}]</strong> cantidad detectada: ${f.cantidad}${f.unidad ? ' ' + escapeHtml(f.unidad) : ''} — texto: "${escapeHtml(f.lineaOriginal)}"
+          </div>`;
+        });
+        html += '</div>';
+      }
+
       cont.innerHTML = html;
     }
 
@@ -509,11 +540,19 @@
         ordenCompraFilas = data.ordenCompra || [];
         remitoFilas = data.remito || [];
         if (ordenCompraFilas.length) {
-          document.getElementById('estadoOC').textContent = `✓ ${ordenCompraFilas.length} producto(s) reconocido(s)`;
+          const reconocidos = ordenCompraFilas.filter(f => f.reconocido).length;
+          const sinReconocer = ordenCompraFilas.length - reconocidos;
+          document.getElementById('estadoOC').textContent = sinReconocer
+            ? `✓ ${reconocidos} reconocido(s) — ⚠ ${sinReconocer} sin reconocer`
+            : `✓ ${reconocidos} producto(s) reconocido(s)`;
           document.getElementById('bloqueOC').classList.add('ok');
         }
         if (remitoFilas.length) {
-          document.getElementById('estadoRemito').textContent = `✓ ${remitoFilas.length} producto(s) reconocido(s)`;
+          const reconocidos = remitoFilas.filter(f => f.reconocido).length;
+          const sinReconocer = remitoFilas.length - reconocidos;
+          document.getElementById('estadoRemito').textContent = sinReconocer
+            ? `✓ ${reconocidos} reconocido(s) — ⚠ ${sinReconocer} sin reconocer`
+            : `✓ ${reconocidos} producto(s) reconocido(s)`;
           document.getElementById('bloqueRemito').classList.add('ok');
         }
         renderizarComparacion_();
