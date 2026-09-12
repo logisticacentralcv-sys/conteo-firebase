@@ -522,15 +522,35 @@
         .trim();
     }
 
-    // Busca un número "suelto" (la cantidad) al principio o al final de la
-    // línea, y devuelve el resto como texto de descripción. Los remitos
-    // suelen tener la cantidad en una punta y la descripción en el medio.
+    // Busca "número + palabra de unidad" (ej: "2 Caja", "5 Unid", "10 Kg") —
+    // mucho más confiable que agarrar cualquier número suelto, porque una
+    // factura real tiene VARIOS números por línea (código, cantidad,
+    // precio, importe) y los precios/importes vienen con coma decimal
+    // (ej: "25.180,18") que un match ingenuo confunde con la cantidad.
+    // Si el patrón aparece más de una vez en la línea (por ejemplo, la
+    // descripción dice "X8 UNID" como parte del nombre del producto), se
+    // usa la ÚLTIMA aparición — en un formato de factura normal, la
+    // columna Cantidad real siempre es la última, justo antes del Precio.
+    const REGEX_CANTIDAD_UNIDAD = /(\d{1,5})\s*(cajas?|cja|unid(?:ad(?:es)?)?|bultos?|kgs?|kilos?|paquetes?|pqt|docenas?|bolsas?|un)\b/gi;
+
     function extraerCantidadDeLinea_(linea) {
+      const matches = [...linea.matchAll(REGEX_CANTIDAD_UNIDAD)];
+      if (matches.length) {
+        const m = matches[matches.length - 1];
+        return { cantidad: parseInt(m[1], 10), unidad: m[2], resto: linea.slice(0, m.index).trim() };
+      }
+      // Fallback para remitos más simples, sin columna de unidad explícita
       const matchFin = linea.match(/\b(\d{1,4})$/);
-      if (matchFin) return { cantidad: parseInt(matchFin[1], 10), resto: linea.slice(0, matchFin.index).trim() };
+      if (matchFin) return { cantidad: parseInt(matchFin[1], 10), unidad: null, resto: linea.slice(0, matchFin.index).trim() };
       const matchInicio = linea.match(/^(\d{1,4})\b/);
-      if (matchInicio) return { cantidad: parseInt(matchInicio[1], 10), resto: linea.slice(matchInicio[0].length).trim() };
-      return { cantidad: null, resto: linea };
+      if (matchInicio) return { cantidad: parseInt(matchInicio[1], 10), unidad: null, resto: linea.slice(matchInicio[0].length).trim() };
+      return { cantidad: null, unidad: null, resto: linea };
+    }
+
+    // "Unidad" o "un" es 1 a 1; cualquier otra cosa (Caja, Bulto, Kg,
+    // Paquete, Docena...) significa que el número no son unidades sueltas.
+    function unidadRequiereRevision_(unidad) {
+      return !!unidad && !/^unid(?:ad(?:es)?)?$|^un$/i.test(unidad);
     }
 
     // Sanitiza para usar como ID de documento de Firestore (nada de "/", límite de largo)
@@ -604,7 +624,7 @@
       const lineas = texto.split('\n').map(l => l.trim()).filter(l => l.length > 2);
       const filas = [];
       lineas.forEach(linea => {
-        const { cantidad, resto } = extraerCantidadDeLinea_(linea);
+        const { cantidad, unidad, resto } = extraerCantidadDeLinea_(linea);
         if (!cantidad || !resto || resto.length < 3) return; // sin número o sin texto: probablemente encabezado/ruido, se ignora sola
 
         const textoNormalizado = normalizarTexto_(resto);
@@ -615,6 +635,8 @@
           lineaOriginal: linea,
           textoNormalizado: textoNormalizado,
           cantidad: cantidad,
+          unidad: unidad,
+          revisarUnidad: unidadRequiereRevision_(unidad),
           codigo: match ? match.codigo : '',
           producto: match ? match.producto : '',
           reconocido: !!match,
@@ -648,6 +670,7 @@
       cont.innerHTML = filasRemitoActual.map((f, idx) => `
         <div style="border:1px solid var(--border); border-radius:10px; padding:10px; margin-bottom:8px; ${f.reconocido ? '' : 'background:#fff7ed; border-color:#fed7aa;'}">
           ${!f.reconocido ? '<div style="color:#ea580c; font-size:11px; font-weight:700; margin-bottom:4px;">⚠ No estoy seguro de cuál es — elegilo a mano</div>' : ''}
+          ${f.revisarUnidad ? `<div style="color:#9333ea; font-size:11px; font-weight:700; margin-bottom:4px;">📦 Detecté "${f.cantidad} ${escapeHtml(f.unidad)}" — si no son unidades sueltas, corregí la cantidad real de unidades abajo</div>` : ''}
           ${f.reconocido && f.porAlias ? '<div style="color:#16a34a; font-size:11px; font-weight:700; margin-bottom:4px;">✓ Reconocido de una carga anterior</div>' : ''}
           <select id="selectRemito-${idx}" onchange="window.__cambiarProductoRemito(${idx}, this.value)"
             style="width:100%; padding:8px; border:1px solid var(--border); border-radius:8px; font-size:13px; margin-bottom:6px;">

@@ -151,12 +151,23 @@
         .replace(/\s+/g, ' ')
         .trim();
     }
+    const REGEX_CANTIDAD_UNIDAD = /(\d{1,5})\s*(cajas?|cja|unid(?:ad(?:es)?)?|bultos?|kgs?|kilos?|paquetes?|pqt|docenas?|bolsas?|un)\b/gi;
+
     function extraerCantidadDeLinea_(linea) {
+      const matches = [...linea.matchAll(REGEX_CANTIDAD_UNIDAD)];
+      if (matches.length) {
+        const m = matches[matches.length - 1];
+        return { cantidad: parseInt(m[1], 10), unidad: m[2], resto: linea.slice(0, m.index).trim() };
+      }
       const matchFin = linea.match(/\b(\d{1,4})$/);
-      if (matchFin) return { cantidad: parseInt(matchFin[1], 10), resto: linea.slice(0, matchFin.index).trim() };
+      if (matchFin) return { cantidad: parseInt(matchFin[1], 10), unidad: null, resto: linea.slice(0, matchFin.index).trim() };
       const matchInicio = linea.match(/^(\d{1,4})\b/);
-      if (matchInicio) return { cantidad: parseInt(matchInicio[1], 10), resto: linea.slice(matchInicio[0].length).trim() };
-      return { cantidad: null, resto: linea };
+      if (matchInicio) return { cantidad: parseInt(matchInicio[1], 10), unidad: null, resto: linea.slice(matchInicio[0].length).trim() };
+      return { cantidad: null, unidad: null, resto: linea };
+    }
+
+    function unidadRequiereRevision_(unidad) {
+      return !!unidad && !/^unid(?:ad(?:es)?)?$|^un$/i.test(unidad);
     }
     function mejorMatchProducto_(textoLinea, listaProductos) {
       const normLinea = ' ' + normalizarTexto_(textoLinea) + ' ';
@@ -234,13 +245,17 @@
       const lineas = texto.split('\n').map(l => l.trim()).filter(l => l.length > 2);
       const filas = [];
       lineas.forEach(linea => {
-        const { cantidad, resto } = extraerCantidadDeLinea_(linea);
+        const { cantidad, unidad, resto } = extraerCantidadDeLinea_(linea);
         if (!cantidad || !resto || resto.length < 3) return;
         const textoNormalizado = normalizarTexto_(resto);
         const porAlias = buscarAlias_(textoNormalizado);
         const match = porAlias || mejorMatchProducto_(resto, productosDelProveedor);
         if (!match) return; // en esta pantalla, si no se reconoce ningún producto, se ignora la línea (es de revisión gerencial, no hay edición manual fila por fila)
-        filas.push({ codigo: match.codigo, producto: match.producto, cantidad: cantidad, lineaOriginal: linea, textoNormalizado });
+        filas.push({
+          codigo: match.codigo, producto: match.producto, cantidad: cantidad,
+          unidad: unidad, revisarUnidad: unidadRequiereRevision_(unidad),
+          lineaOriginal: linea, textoNormalizado
+        });
       });
       return filas;
     }
@@ -379,13 +394,14 @@
 
       const porCodigo = {};
       ordenCompraFilas.forEach(f => {
-        if (!porCodigo[f.codigo]) porCodigo[f.codigo] = { codigo: f.codigo, producto: f.producto, pedido: 0, remito: null };
+        if (!porCodigo[f.codigo]) porCodigo[f.codigo] = { codigo: f.codigo, producto: f.producto, pedido: 0, remito: null, unidadPedido: f.unidad, unidadRemito: null };
         porCodigo[f.codigo].pedido += f.cantidad;
       });
       remitoFilas.forEach(f => {
-        if (!porCodigo[f.codigo]) porCodigo[f.codigo] = { codigo: f.codigo, producto: f.producto, pedido: null, remito: 0 };
+        if (!porCodigo[f.codigo]) porCodigo[f.codigo] = { codigo: f.codigo, producto: f.producto, pedido: null, remito: 0, unidadPedido: null, unidadRemito: f.unidad };
         if (porCodigo[f.codigo].remito === null) porCodigo[f.codigo].remito = 0;
         porCodigo[f.codigo].remito += f.cantidad;
+        porCodigo[f.codigo].unidadRemito = f.unidad;
       });
 
       const filas = Object.values(porCodigo).sort((a, b) => (a.producto || '').localeCompare(b.producto || '', 'es'));
@@ -398,8 +414,11 @@
         else if (f.remito === f.pedido) badge = '<span class="badge badge-ok">✅ Coincide</span>';
         else badge = `<span class="badge badge-warn">⚠ Diferencia (${f.remito > f.pedido ? '+' : ''}${f.remito - f.pedido})</span>`;
 
+        const notaUnidad = (unidadRequiereRevision_(f.unidadPedido) || unidadRequiereRevision_(f.unidadRemito))
+          ? `<div style="color:#9333ea; font-size:11px; margin-top:2px;">📦 En ${escapeHtml(f.unidadPedido || f.unidadRemito)}, no en unidades sueltas</div>` : '';
+
         html += `<tr>
-          <td>${escapeHtml(f.producto)}<div style="color:var(--muted); font-size:11px;">${escapeHtml(f.codigo)}</div>${repartoTextoParaCodigo_(f.codigo)}</td>
+          <td>${escapeHtml(f.producto)}<div style="color:var(--muted); font-size:11px;">${escapeHtml(f.codigo)}</div>${repartoTextoParaCodigo_(f.codigo)}${notaUnidad}</td>
           <td>${f.pedido === null ? '—' : f.pedido}</td>
           <td>${f.remito === null ? '—' : f.remito}</td>
           <td>${badge}</td>
