@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Recepción Anticipada de Mercadería</title>
+  <style>
+    :root {
+      --primary: #2563eb; --primary-dark: #1d4ed8; --green: #16a34a; --orange: #ea580c;
+      --red: #dc2626; --bg: #f3f4f6; --card: #ffffff; --text: #111827; --muted: #6b7280; --border: #e5e7eb;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); }
+    header { background: var(--primary); color: white; padding: 18px 24px; }
+    header h1 { margin: 0; font-size: 20px; }
+    header p { margin: 4px 0 0; font-size: 13px; opacity: 0.9; }
+    .container { max-width: 900px; margin: 0 auto; padding: 20px 16px 60px; }
+    .card { background: var(--card); border-radius: 14px; padding: 18px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+    .card h2 { margin: 0 0 12px; font-size: 16px; }
+    select, input[type=text] { width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 10px; font-size: 14px; }
+    .btn { display: inline-block; padding: 10px 16px; border: none; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; }
+    .btn-primary { background: var(--primary); color: white; }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary { background: #e5e7eb; color: var(--text); }
+    .btn-success { background: var(--green); color: white; }
+    .upload-block { border: 1px dashed var(--border); border-radius: 12px; padding: 14px; text-align: center; }
+    .upload-block.ok { border-color: var(--green); background: #f0fdf4; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; }
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+    .badge-ok { background: #dcfce7; color: #16a34a; }
+    .badge-warn { background: #ffedd5; color: #c2410c; }
+    .badge-falta { background: #fef9c3; color: #a16207; }
+    .badge-noesp { background: #fee2e2; color: #dc2626; }
+    .reparto-mini { font-size: 11px; color: var(--muted); margin-top: 3px; }
+    .empty-state { color: var(--muted); font-size: 13px; text-align: center; padding: 16px 0; }
+    .cargando { color: var(--muted); font-size: 13px; }
+    .recepcion-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; cursor: pointer; }
+    .recepcion-item:hover { background: #f9fafb; }
+    .recepcion-item .estado { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 6px; }
+    .estado-abierta { background: #dbeafe; color: var(--primary-dark); }
+    .estado-cerrada { background: #dcfce7; color: var(--green); }
+    .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--green); color: white; padding: 12px 20px; border-radius: 10px; font-size: 14px; font-weight: 600; box-shadow: 0 4px 12px rgba(0,0,0,0.2); opacity: 0; pointer-events: none; transition: opacity 0.3s; z-index: 100; }
+    .toast.show { opacity: 1; }
+    .toast.error { background: var(--red); }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>📋 Recepción Anticipada de Mercadería</h1>
+    <p>Compras / Planificación / Logística — revisá lo que viene ANTES de que llegue el camión</p>
+  </header>
+
+  <div class="container">
+
+    <div class="card">
+      <h2>Recepciones recientes</h2>
+      <div id="listaRecepciones"><div class="cargando">Cargando...</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Nueva recepción / continuar una</h2>
+      <div class="field" style="margin-bottom:14px;">
+        <label style="display:block; font-size:13px; font-weight:600; color:var(--muted); margin-bottom:4px;">Proveedor</label>
+        <select id="selectProveedor">
+          <option value="">— Elegir proveedor —</option>
+        </select>
+      </div>
+
+      <div id="bloqueTrabajo" style="display:none;">
+        <div class="grid-2" style="margin-bottom:16px;">
+          <div class="upload-block" id="bloqueOC">
+            <div style="font-weight:700; margin-bottom:6px;">1️⃣ Orden de Compra</div>
+            <div id="estadoOC" style="font-size:12px; color:var(--muted); margin-bottom:8px;">Todavía no se cargó</div>
+            <input type="file" id="inputOC" accept="image/*,application/pdf" style="display:none;">
+            <button class="btn btn-primary" id="btnSubirOC">📄 Subir foto/PDF</button>
+          </div>
+          <div class="upload-block" id="bloqueRemito">
+            <div style="font-weight:700; margin-bottom:6px;">2️⃣ Remito del proveedor</div>
+            <div id="estadoRemito" style="font-size:12px; color:var(--muted); margin-bottom:8px;">Todavía no se cargó</div>
+            <input type="file" id="inputRemito" accept="image/*,application/pdf" style="display:none;">
+            <button class="btn btn-primary" id="btnSubirRemito">🚚 Subir foto/PDF</button>
+          </div>
+        </div>
+
+        <div id="comparacionContenido"><div class="empty-state">Subí al menos uno de los dos documentos para ver la comparación.</div></div>
+
+        <div style="margin-top:16px; display:flex; gap:10px; flex-wrap:wrap;">
+          <button class="btn btn-success" id="btnGuardarRecepcion">💾 Guardar</button>
+          <button class="btn btn-secondary" id="btnCerrarRecepcion">✅ Marcar como recibida / cerrar</button>
+          <button class="btn btn-secondary" id="btnNuevaRecepcion">🆕 Empezar una nueva</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
+    import {
+      getFirestore, doc, getDoc, setDoc, collection, query, where, orderBy, limit, getDocs, serverTimestamp
+    } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+
+    // Mismo proyecto de Firebase que las otras dos apps (conteo y armador)
+    const firebaseConfig = {
+      apiKey: "AIzaSyBjsx_gcl2X1yr8SPoi_tF3qGcrFRLK3bQ",
+      authDomain: "armador-de-pedidos-secos-119b3.firebaseapp.com",
+      projectId: "armador-de-pedidos-secos-119b3",
+      storageBucket: "armador-de-pedidos-secos-119b3.firebasestorage.app",
+      messagingSenderId: "713677759926",
+      appId: "1:713677759926:web:e0a8f512d79f75f2a5cd17"
+    };
+    // Misma clave de Cloud Vision que ya configuramos en la app de conteo
+    const VISION_API_KEY = "AIzaSyDXwiHQF1zdQmNWsWJM8xnnObuZDTdsDSY";
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    let proveedorActivo = "";
+    let productosDelProveedor = [];
+    let aliasesProveedor = {};
+    let pedidosPendientesPorCodigo = {}; // codigo -> [{sucursal, cantidadPedida, armado}], de TODAS las sucursales
+    let ordenCompraFilas = [];
+    let remitoFilas = [];
+    let recepcionActualId = null; // si se está continuando una ya guardada
+
+    function mostrarToast(msg, esError) {
+      const toast = document.getElementById('toast');
+      toast.textContent = msg;
+      toast.classList.toggle('error', !!esError);
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), esError ? 3500 : 2200);
+    }
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
+    }
+    function escapeAttrJs(str) { return String(str).replace(/'/g, "\\'"); }
+
+    // ---------------- HELPERS DE TEXTO / MATCHING (mismos que en index.html) ----------------
+    function normalizarTexto_(s) {
+      return String(s || '')
+        .toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+    function extraerCantidadDeLinea_(linea) {
+      const matchFin = linea.match(/\b(\d{1,4})$/);
+      if (matchFin) return { cantidad: parseInt(matchFin[1], 10), resto: linea.slice(0, matchFin.index).trim() };
+      const matchInicio = linea.match(/^(\d{1,4})\b/);
+      if (matchInicio) return { cantidad: parseInt(matchInicio[1], 10), resto: linea.slice(matchInicio[0].length).trim() };
+      return { cantidad: null, resto: linea };
+    }
+    function mejorMatchProducto_(textoLinea, listaProductos) {
+      const normLinea = ' ' + normalizarTexto_(textoLinea) + ' ';
+      let mejor = null, mejorPuntaje = 0;
+      listaProductos.forEach(p => {
+        const tokensProducto = normalizarTexto_(p.producto).split(' ').filter(t => t.length >= 3);
+        if (!tokensProducto.length) return;
+        let coincidencias = 0;
+        tokensProducto.forEach(t => { if (normLinea.includes(' ' + t + ' ') || normLinea.includes(' ' + t)) coincidencias++; });
+        const puntaje = coincidencias / tokensProducto.length;
+        if (puntaje > mejorPuntaje) { mejorPuntaje = puntaje; mejor = p; }
+      });
+      return (mejor && mejorPuntaje >= 0.5) ? mejor : null;
+    }
+    function buscarAlias_(textoNormalizado) {
+      if (aliasesProveedor[textoNormalizado]) return aliasesProveedor[textoNormalizado];
+      for (const clave in aliasesProveedor) {
+        if (clave.length >= 6 && (textoNormalizado.includes(clave) || clave.includes(textoNormalizado))) return aliasesProveedor[clave];
+      }
+      return null;
+    }
+    function sanitizarIdCliente_(clave) { return String(clave).replace(/\//g, '_').substring(0, 300); }
+
+    async function cargarAliasesProveedor_(proveedor) {
+      aliasesProveedor = {};
+      try {
+        const q = query(collection(db, 'aliasRemito'), where('proveedor', '==', proveedor));
+        const snap = await getDocs(q);
+        snap.forEach(d => {
+          const data = d.data();
+          aliasesProveedor[data.textoNormalizado] = { codigo: data.codigo, producto: data.producto };
+        });
+      } catch (err) { console.error('Error cargando alias', err); }
+    }
+
+    function leerArchivoComoBase64_(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function leerTextoDeArchivoConVision_(file) {
+      const base64 = await leerArchivoComoBase64_(file);
+      const esPdf = file.type === 'application/pdf';
+      if (esPdf) {
+        const respuesta = await fetch(`https://vision.googleapis.com/v1/files:annotate?key=${VISION_API_KEY}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ requests: [{ inputConfig: { mimeType: 'application/pdf', content: base64 }, features: [{ type: 'DOCUMENT_TEXT_DETECTION' }] }] })
+        });
+        const data = await respuesta.json();
+        if (data.error) throw new Error(data.error.message || 'Error de Vision API');
+        const resp0 = data.responses && data.responses[0];
+        if (resp0 && resp0.error) throw new Error(resp0.error.message || 'Error leyendo el PDF');
+        const paginas = (resp0 && resp0.responses) || [];
+        return paginas.map(p => (p.fullTextAnnotation ? p.fullTextAnnotation.text : '')).join('\n');
+      }
+      const respuesta = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${VISION_API_KEY}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requests: [{ image: { content: base64 }, features: [{ type: 'DOCUMENT_TEXT_DETECTION' }] }] })
+      });
+      const data = await respuesta.json();
+      if (data.error) throw new Error(data.error.message || 'Error de Vision API');
+      const resp0 = data.responses && data.responses[0];
+      if (resp0 && resp0.error) throw new Error(resp0.error.message || 'Error leyendo la imagen');
+      return (resp0 && resp0.fullTextAnnotation) ? resp0.fullTextAnnotation.text : '';
+    }
+
+    // Convierte texto OCR crudo en filas {codigo, producto, cantidad}, usando
+    // primero los alias ya aprendidos del proveedor y si no, la heurística
+    // por palabras — igual que en la app de conteo.
+    function procesarTextoAFilas_(texto) {
+      const lineas = texto.split('\n').map(l => l.trim()).filter(l => l.length > 2);
+      const filas = [];
+      lineas.forEach(linea => {
+        const { cantidad, resto } = extraerCantidadDeLinea_(linea);
+        if (!cantidad || !resto || resto.length < 3) return;
+        const textoNormalizado = normalizarTexto_(resto);
+        const porAlias = buscarAlias_(textoNormalizado);
+        const match = porAlias || mejorMatchProducto_(resto, productosDelProveedor);
+        if (!match) return; // en esta pantalla, si no se reconoce ningún producto, se ignora la línea (es de revisión gerencial, no hay edición manual fila por fila)
+        filas.push({ codigo: match.codigo, producto: match.producto, cantidad: cantidad, lineaOriginal: linea, textoNormalizado });
+      });
+      return filas;
+    }
+
+    // ---------------- PEDIDOS PENDIENTES (para el reparto por sucursal) ----------------
+    async function cargarPedidosPendientes_() {
+      try {
+        const q = query(collection(db, 'pedidos'), where('procesado', '==', false));
+        const snap = await getDocs(q);
+        const mapa = {};
+        snap.forEach(d => {
+          const data = d.data();
+          if (!data.codigo) return;
+          if (!mapa[data.codigo]) mapa[data.codigo] = [];
+          mapa[data.codigo].push({
+            sucursal: data.sucursal || '(sin sucursal)',
+            cantidadPedida: Number(data.cantidadPedida) || 0,
+            armado: (data.armado === null || data.armado === undefined) ? null : Number(data.armado)
+          });
+        });
+        pedidosPendientesPorCodigo = mapa;
+      } catch (err) { console.error('Error cargando pedidos pendientes', err); }
+    }
+
+    function repartoTextoParaCodigo_(codigo) {
+      const filas = pedidosPendientesPorCodigo[codigo];
+      if (!filas || !filas.length) return '';
+      const porSucursal = {};
+      filas.forEach(f => {
+        if (!porSucursal[f.sucursal]) porSucursal[f.sucursal] = 0;
+        porSucursal[f.sucursal] += f.cantidadPedida;
+      });
+      const partes = Object.keys(porSucursal).map(s => `${escapeHtml(s)}: ${porSucursal[s]}`);
+      return `<div class="reparto-mini">📊 Lo piden: ${partes.join(' · ')}</div>`;
+    }
+
+    // ---------------- PROVEEDORES ----------------
+    async function cargarProveedores_() {
+      const select = document.getElementById('selectProveedor');
+      try {
+        const snap = await getDocs(collection(db, 'proveedores'));
+        const nombres = [];
+        snap.forEach(d => nombres.push(d.data().nombre || d.id));
+        nombres.sort((a, b) => a.localeCompare(b, 'es'));
+        nombres.forEach(nombre => {
+          const opt = document.createElement('option');
+          opt.value = nombre; opt.textContent = nombre;
+          select.appendChild(opt);
+        });
+      } catch (err) {
+        mostrarToast('Error cargando proveedores: ' + err.message, true);
+      }
+    }
+
+    document.getElementById('selectProveedor').addEventListener('change', async (e) => {
+      const nuevoProveedor = e.target.value;
+      if (!nuevoProveedor) {
+        document.getElementById('bloqueTrabajo').style.display = 'none';
+        return;
+      }
+      iniciarNuevaRecepcion_(nuevoProveedor);
+    });
+
+    async function iniciarNuevaRecepcion_(proveedor) {
+      proveedorActivo = proveedor;
+      recepcionActualId = null;
+      ordenCompraFilas = [];
+      remitoFilas = [];
+      document.getElementById('selectProveedor').value = proveedor;
+      document.getElementById('bloqueTrabajo').style.display = 'block';
+      document.getElementById('estadoOC').textContent = 'Todavía no se cargó';
+      document.getElementById('estadoRemito').textContent = 'Todavía no se cargó';
+      document.getElementById('bloqueOC').classList.remove('ok');
+      document.getElementById('bloqueRemito').classList.remove('ok');
+      document.getElementById('comparacionContenido').innerHTML = '<div class="cargando">Cargando productos del proveedor...</div>';
+
+      try {
+        const q = query(collection(db, 'productos'), where('proveedor', '==', proveedor));
+        const snap = await getDocs(q);
+        productosDelProveedor = [];
+        snap.forEach(d => productosDelProveedor.push({ codigo: d.id, producto: d.data().producto || '' }));
+        await Promise.all([cargarAliasesProveedor_(proveedor), cargarPedidosPendientes_()]);
+        document.getElementById('comparacionContenido').innerHTML = '<div class="empty-state">Subí al menos uno de los dos documentos para ver la comparación.</div>';
+      } catch (err) {
+        document.getElementById('comparacionContenido').innerHTML = `<div class="empty-state">Error: ${err.message}</div>`;
+      }
+    }
+
+    // ---------------- SUBIR OC / REMITO ----------------
+    document.getElementById('btnSubirOC').addEventListener('click', () => document.getElementById('inputOC').click());
+    document.getElementById('btnSubirRemito').addEventListener('click', () => document.getElementById('inputRemito').click());
+
+    document.getElementById('inputOC').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (file) await procesarSubida_(file, 'oc');
+    });
+    document.getElementById('inputRemito').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (file) await procesarSubida_(file, 'remito');
+    });
+
+    async function procesarSubida_(file, tipo) {
+      const btnId = tipo === 'oc' ? 'btnSubirOC' : 'btnSubirRemito';
+      const estadoId = tipo === 'oc' ? 'estadoOC' : 'estadoRemito';
+      const bloqueId = tipo === 'oc' ? 'bloqueOC' : 'bloqueRemito';
+      const btn = document.getElementById(btnId);
+      btn.disabled = true;
+      btn.textContent = 'Leyendo...';
+      document.getElementById(estadoId).textContent = 'Leyendo el archivo...';
+      try {
+        const texto = await leerTextoDeArchivoConVision_(file);
+        if (!texto) throw new Error('No se detectó texto en el archivo');
+        const filas = procesarTextoAFilas_(texto);
+        if (tipo === 'oc') ordenCompraFilas = filas; else remitoFilas = filas;
+        document.getElementById(estadoId).textContent = `✓ ${filas.length} producto(s) reconocido(s)`;
+        document.getElementById(bloqueId).classList.add('ok');
+        renderizarComparacion_();
+      } catch (err) {
+        document.getElementById(estadoId).textContent = 'Error: ' + err.message;
+        mostrarToast('Error leyendo el archivo: ' + err.message, true);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = tipo === 'oc' ? '📄 Subir foto/PDF' : '🚚 Subir foto/PDF';
+      }
+    }
+
+    // ---------------- COMPARACIÓN ----------------
+    function renderizarComparacion_() {
+      const cont = document.getElementById('comparacionContenido');
+      if (!ordenCompraFilas.length && !remitoFilas.length) {
+        cont.innerHTML = '<div class="empty-state">Subí al menos uno de los dos documentos para ver la comparación.</div>';
+        return;
+      }
+
+      const porCodigo = {};
+      ordenCompraFilas.forEach(f => {
+        if (!porCodigo[f.codigo]) porCodigo[f.codigo] = { codigo: f.codigo, producto: f.producto, pedido: 0, remito: null };
+        porCodigo[f.codigo].pedido += f.cantidad;
+      });
+      remitoFilas.forEach(f => {
+        if (!porCodigo[f.codigo]) porCodigo[f.codigo] = { codigo: f.codigo, producto: f.producto, pedido: null, remito: 0 };
+        if (porCodigo[f.codigo].remito === null) porCodigo[f.codigo].remito = 0;
+        porCodigo[f.codigo].remito += f.cantidad;
+      });
+
+      const filas = Object.values(porCodigo).sort((a, b) => (a.producto || '').localeCompare(b.producto || '', 'es'));
+
+      let html = '<table><tr><th>Producto</th><th>Pedido</th><th>Remito</th><th>Estado</th></tr>';
+      filas.forEach(f => {
+        let badge;
+        if (f.pedido === null) badge = '<span class="badge badge-noesp">🔴 No estaba en la orden</span>';
+        else if (f.remito === null) badge = '<span class="badge badge-falta">🟡 Falta en el remito</span>';
+        else if (f.remito === f.pedido) badge = '<span class="badge badge-ok">✅ Coincide</span>';
+        else badge = `<span class="badge badge-warn">⚠ Diferencia (${f.remito > f.pedido ? '+' : ''}${f.remito - f.pedido})</span>`;
+
+        html += `<tr>
+          <td>${escapeHtml(f.producto)}<div style="color:var(--muted); font-size:11px;">${escapeHtml(f.codigo)}</div>${repartoTextoParaCodigo_(f.codigo)}</td>
+          <td>${f.pedido === null ? '—' : f.pedido}</td>
+          <td>${f.remito === null ? '—' : f.remito}</td>
+          <td>${badge}</td>
+        </tr>`;
+      });
+      html += '</table>';
+      cont.innerHTML = html;
+    }
+
+    // ---------------- GUARDAR / CERRAR / RECIENTES ----------------
+    function idRecepcionParaHoy_(proveedor) {
+      const hoy = new Date().toISOString().slice(0, 10);
+      return sanitizarIdCliente_(proveedor + '_' + hoy);
+    }
+
+    document.getElementById('btnGuardarRecepcion').addEventListener('click', async () => {
+      if (!proveedorActivo) return;
+      const id = recepcionActualId || idRecepcionParaHoy_(proveedorActivo);
+      try {
+        await setDoc(doc(db, 'recepcionesAnticipadas', id), {
+          proveedor: proveedorActivo,
+          ordenCompra: ordenCompraFilas,
+          remito: remitoFilas,
+          estado: 'abierta',
+          actualizado: serverTimestamp()
+        }, { merge: true });
+        recepcionActualId = id;
+        mostrarToast('Guardado ✓');
+        cargarRecepcionesRecientes_();
+      } catch (err) {
+        mostrarToast('Error guardando: ' + err.message, true);
+      }
+    });
+
+    document.getElementById('btnCerrarRecepcion').addEventListener('click', async () => {
+      if (!proveedorActivo) return;
+      const id = recepcionActualId || idRecepcionParaHoy_(proveedorActivo);
+      try {
+        await setDoc(doc(db, 'recepcionesAnticipadas', id), {
+          proveedor: proveedorActivo,
+          ordenCompra: ordenCompraFilas,
+          remito: remitoFilas,
+          estado: 'cerrada',
+          actualizado: serverTimestamp()
+        }, { merge: true });
+        mostrarToast('Marcada como recibida ✓');
+        cargarRecepcionesRecientes_();
+      } catch (err) {
+        mostrarToast('Error: ' + err.message, true);
+      }
+    });
+
+    document.getElementById('btnNuevaRecepcion').addEventListener('click', () => {
+      if (proveedorActivo) iniciarNuevaRecepcion_(proveedorActivo);
+    });
+
+    async function cargarRecepcionesRecientes_() {
+      const cont = document.getElementById('listaRecepciones');
+      try {
+        const q = query(collection(db, 'recepcionesAnticipadas'), orderBy('actualizado', 'desc'), limit(20));
+        const snap = await getDocs(q);
+        if (snap.empty) { cont.innerHTML = '<div class="empty-state">Todavía no hay ninguna cargada</div>'; return; }
+        let html = '';
+        snap.forEach(d => {
+          const data = d.data();
+          const fecha = data.actualizado && data.actualizado.toDate ? data.actualizado.toDate().toLocaleString('es-AR') : '';
+          html += `<div class="recepcion-item" onclick="window.__abrirRecepcion('${escapeAttrJs(d.id)}')">
+            <div>
+              <div style="font-weight:600;">${escapeHtml(data.proveedor)}</div>
+              <div style="font-size:11px; color:var(--muted);">${fecha} · OC: ${(data.ordenCompra||[]).length} · Remito: ${(data.remito||[]).length}</div>
+            </div>
+            <span class="estado ${data.estado === 'cerrada' ? 'estado-cerrada' : 'estado-abierta'}">${data.estado === 'cerrada' ? 'Recibida' : 'Abierta'}</span>
+          </div>`;
+        });
+        cont.innerHTML = html;
+      } catch (err) {
+        cont.innerHTML = `<div class="empty-state">Error: ${err.message}</div>`;
+      }
+    }
+
+    window.__abrirRecepcion = async function(id) {
+      try {
+        const snap = await getDoc(doc(db, 'recepcionesAnticipadas', id));
+        if (!snap.exists()) { mostrarToast('No se encontró esa recepción', true); return; }
+        const data = snap.data();
+        await iniciarNuevaRecepcion_(data.proveedor);
+        recepcionActualId = id;
+        ordenCompraFilas = data.ordenCompra || [];
+        remitoFilas = data.remito || [];
+        if (ordenCompraFilas.length) {
+          document.getElementById('estadoOC').textContent = `✓ ${ordenCompraFilas.length} producto(s) reconocido(s)`;
+          document.getElementById('bloqueOC').classList.add('ok');
+        }
+        if (remitoFilas.length) {
+          document.getElementById('estadoRemito').textContent = `✓ ${remitoFilas.length} producto(s) reconocido(s)`;
+          document.getElementById('bloqueRemito').classList.add('ok');
+        }
+        renderizarComparacion_();
+        window.scrollTo({ top: 300, behavior: 'smooth' });
+      } catch (err) {
+        mostrarToast('Error abriendo: ' + err.message, true);
+      }
+    };
+
+    cargarProveedores_();
+    cargarRecepcionesRecientes_();
+  </script>
+</body>
+</html>
