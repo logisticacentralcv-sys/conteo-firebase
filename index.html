@@ -154,8 +154,8 @@
     </select>
     <div id="contadorProveedorActivo" style="font-size:11px; font-weight:400; margin-top:4px;"></div>
     <div id="bloqueLeerRemito" style="margin-top:10px;">
-      <input type="file" id="inputFotoRemito" accept="image/*" capture="environment" style="display:none;">
-      <button class="btn btn-primary" id="btnLeerRemito" style="margin-top:0; background:#1d4ed8;" disabled>📷 Leer foto de remito</button>
+      <input type="file" id="inputFotoRemito" accept="image/*,application/pdf" style="display:none;">
+      <button class="btn btn-primary" id="btnLeerRemito" style="margin-top:0; background:#1d4ed8;" disabled>📷 Leer foto o PDF de remito</button>
       <div id="hintLeerRemito" style="font-size:11px; color:#92400e; margin-top:4px; text-align:center;">⬆ Elegí un proveedor de la lista de arriba para poder subir la foto</div>
     </div>
   </div>
@@ -440,6 +440,48 @@
       });
     }
 
+    // Lee el texto de una imagen O un PDF con Google Cloud Vision. Un PDF
+    // usa un endpoint distinto (files:annotate, por página) que una imagen
+    // (images:annotate) — esta función elige el correcto según el tipo de
+    // archivo y devuelve siempre un texto plano, para no tener que pensar
+    // en la diferencia en el resto del código.
+    async function leerTextoDeArchivoConVision_(file) {
+      const base64 = await leerArchivoComoBase64_(file);
+      const esPdf = file.type === 'application/pdf';
+
+      if (esPdf) {
+        const respuesta = await fetch(`https://vision.googleapis.com/v1/files:annotate?key=${VISION_API_KEY}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            requests: [{
+              inputConfig: { mimeType: 'application/pdf', content: base64 },
+              features: [{ type: 'DOCUMENT_TEXT_DETECTION' }]
+            }]
+          })
+        });
+        const data = await respuesta.json();
+        if (data.error) throw new Error(data.error.message || 'Error de Vision API');
+        const resp0 = data.responses && data.responses[0];
+        if (resp0 && resp0.error) throw new Error(resp0.error.message || 'Error leyendo el PDF');
+        const paginas = (resp0 && resp0.responses) || [];
+        return paginas.map(p => (p.fullTextAnnotation ? p.fullTextAnnotation.text : '')).join('\n');
+      }
+
+      const respuesta = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${VISION_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: [{ image: { content: base64 }, features: [{ type: 'DOCUMENT_TEXT_DETECTION' }] }]
+        })
+      });
+      const data = await respuesta.json();
+      if (data.error) throw new Error(data.error.message || 'Error de Vision API');
+      const resp0 = data.responses && data.responses[0];
+      if (resp0 && resp0.error) throw new Error(resp0.error.message || 'Error leyendo la imagen');
+      return (resp0 && resp0.fullTextAnnotation) ? resp0.fullTextAnnotation.text : '';
+    }
+
     async function leerRemitoDesdeFoto(file) {
       if (!proveedorActivo || !productosDelProveedorActivo) {
         mostrarToast('Elegí primero un proveedor arriba', true);
@@ -451,34 +493,19 @@
       }
       const btn = document.getElementById('btnLeerRemito');
       btn.disabled = true;
-      btn.textContent = 'Leyendo foto...';
+      btn.textContent = 'Leyendo...';
       try {
-        const base64 = await leerArchivoComoBase64_(file);
-        const respuesta = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${VISION_API_KEY}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            requests: [{
-              image: { content: base64 },
-              features: [{ type: 'DOCUMENT_TEXT_DETECTION' }]
-            }]
-          })
-        });
-        const data = await respuesta.json();
-        if (data.error) throw new Error(data.error.message || 'Error de Vision API');
-        const resp0 = data.responses && data.responses[0];
-        if (resp0 && resp0.error) throw new Error(resp0.error.message || 'Error leyendo la imagen');
-        const textoCompleto = (resp0 && resp0.fullTextAnnotation) ? resp0.fullTextAnnotation.text : '';
+        const textoCompleto = await leerTextoDeArchivoConVision_(file);
         if (!textoCompleto) {
-          mostrarToast('No se detectó texto en la foto', true);
+          mostrarToast('No se detectó texto en el archivo', true);
           return;
         }
         procesarTextoRemito_(textoCompleto);
       } catch (err) {
-        mostrarToast('Error leyendo la foto: ' + err.message, true);
+        mostrarToast('Error leyendo el archivo: ' + err.message, true);
       } finally {
         btn.disabled = false;
-        btn.textContent = '📷 Leer foto de remito';
+        btn.textContent = '📷 Leer foto o PDF de remito';
       }
     }
 
