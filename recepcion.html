@@ -124,6 +124,7 @@
 
     let proveedorActivo = "";
     let productosDelProveedor = [];
+    let indiceProductosProveedor = null;
     let aliasesProveedor = {};
     let pedidosPendientesPorCodigo = {}; // codigo -> [{sucursal, cantidadPedida, armado}], de TODAS las sucursales
     let ordenCompraFilas = [];
@@ -169,18 +170,43 @@
     function unidadRequiereRevision_(unidad) {
       return !!unidad && !/^unid(?:ad(?:es)?)?$|^un$/i.test(unidad);
     }
-    function mejorMatchProducto_(textoLinea, listaProductos) {
-      const normLinea = ' ' + normalizarTexto_(textoLinea) + ' ';
-      let mejor = null, mejorPuntaje = 0;
-      listaProductos.forEach(p => {
-        const tokensProducto = normalizarTexto_(p.producto).split(' ').filter(t => t.length >= 3);
-        if (!tokensProducto.length) return;
-        let coincidencias = 0;
-        tokensProducto.forEach(t => { if (normLinea.includes(' ' + t + ' ') || normLinea.includes(' ' + t)) coincidencias++; });
-        const puntaje = coincidencias / tokensProducto.length;
-        if (puntaje > mejorPuntaje) { mejorPuntaje = puntaje; mejor = p; }
+    function construirIndiceTokens_(listaProductos) {
+      const productosConTokens = listaProductos.map(p => ({
+        codigo: p.codigo,
+        producto: p.producto,
+        tokens: [...new Set(normalizarTexto_(p.producto).split(' ').filter(t => t.length >= 2))]
+      }));
+      const frecuencia = {};
+      productosConTokens.forEach(p => p.tokens.forEach(t => { frecuencia[t] = (frecuencia[t] || 0) + 1; }));
+      return { productosConTokens, frecuencia };
+    }
+
+    function mejorMatchProducto_(textoLinea, indice) {
+      if (!indice || !indice.productosConTokens.length) return null;
+      const tokensLinea = new Set(normalizarTexto_(textoLinea).split(' ').filter(t => t.length >= 2));
+      if (!tokensLinea.size) return null;
+
+      const candidatos = [];
+      indice.productosConTokens.forEach(p => {
+        if (!p.tokens.length) return;
+        let pesoEncontrado = 0, pesoTotal = 0;
+        p.tokens.forEach(t => {
+          const peso = 1 / (indice.frecuencia[t] || 1);
+          pesoTotal += peso;
+          if (tokensLinea.has(t)) pesoEncontrado += peso;
+        });
+        if (pesoTotal <= 0) return;
+        candidatos.push({ codigo: p.codigo, producto: p.producto, score: pesoEncontrado / pesoTotal });
       });
-      return (mejor && mejorPuntaje >= 0.5) ? mejor : null;
+
+      candidatos.sort((a, b) => b.score - a.score);
+      const mejor = candidatos[0];
+      if (!mejor || mejor.score < 0.55) return null;
+
+      const segundo = candidatos[1];
+      if (segundo && (mejor.score - segundo.score) < 0.15) return null;
+
+      return { codigo: mejor.codigo, producto: mejor.producto };
     }
     function buscarAlias_(textoNormalizado) {
       if (aliasesProveedor[textoNormalizado]) return aliasesProveedor[textoNormalizado];
@@ -249,7 +275,7 @@
         if (!cantidad || !resto || resto.length < 3) return;
         const textoNormalizado = normalizarTexto_(resto);
         const porAlias = buscarAlias_(textoNormalizado);
-        const match = porAlias || mejorMatchProducto_(resto, productosDelProveedor);
+        const match = porAlias || mejorMatchProducto_(resto, indiceProductosProveedor);
         // Ya no se descarta si no matchea — se guarda igual (con codigo vacío)
         // para poder MOSTRAR qué se extrajo y por qué no se reconoció, en vez
         // de que la pantalla diga "0 reconocidos" sin dar ninguna pista.
@@ -339,6 +365,7 @@
         const snap = await getDocs(q);
         productosDelProveedor = [];
         snap.forEach(d => productosDelProveedor.push({ codigo: d.id, producto: d.data().producto || '' }));
+        indiceProductosProveedor = construirIndiceTokens_(productosDelProveedor);
         await Promise.all([cargarAliasesProveedor_(proveedor), cargarPedidosPendientes_()]);
         document.getElementById('comparacionContenido').innerHTML = '<div class="empty-state">Subí al menos uno de los dos documentos para ver la comparación.</div>';
       } catch (err) {

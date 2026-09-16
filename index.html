@@ -343,6 +343,7 @@
     let modoProveedor = false;
     let proveedorActivo = "";
     let productosDelProveedorActivo = null; // null = sin filtrar (usa Firestore); array = filtrado en memoria
+    let indiceProductosProveedor = null; // índice de tokens con pesado por rareza, para el matching del remito
     let aliasesProveedorActivo = {}; // textoNormalizado -> {codigo, producto} — lo que ya se corrigió antes para este proveedor
     let proveedoresYaListados = false;
 
@@ -397,6 +398,7 @@
       document.getElementById('hintLeerRemito').style.display = proveedorActivo ? 'none' : 'block';
       if (!proveedorActivo) {
         productosDelProveedorActivo = null;
+        indiceProductosProveedor = null;
         contador.textContent = '';
         return;
       }
@@ -406,6 +408,7 @@
         const snap = await getDocs(q);
         productosDelProveedorActivo = [];
         snap.forEach(d => productosDelProveedorActivo.push({ codigo: d.id, producto: d.data().producto || '' }));
+        indiceProductosProveedor = construirIndiceTokens_(productosDelProveedorActivo);
         await cargarAliasesProveedor_(proveedorActivo);
         contador.textContent = `${productosDelProveedorActivo.length} producto(s) de este proveedor — buscá por nombre o código acá arriba`;
       } catch (err) {
@@ -603,21 +606,55 @@
       return null;
     }
 
-    // Matchea por cantidad de palabras del producto que aparecen en la
-    // línea leída (no exige que coincida todo, ni el orden) — bastante
-    // tolerante a que el OCR se coma alguna letra o el remito abrevie.
-    function mejorMatchProducto_(textoLinea, listaProductos) {
-      const normLinea = ' ' + normalizarTexto_(textoLinea) + ' ';
-      let mejor = null, mejorPuntaje = 0;
-      listaProductos.forEach(p => {
-        const tokensProducto = normalizarTexto_(p.producto).split(' ').filter(t => t.length >= 3);
-        if (!tokensProducto.length) return;
-        let coincidencias = 0;
-        tokensProducto.forEach(t => { if (normLinea.includes(' ' + t + ' ') || normLinea.includes(' ' + t)) coincidencias++; });
-        const puntaje = coincidencias / tokensProducto.length;
-        if (puntaje > mejorPuntaje) { mejorPuntaje = puntaje; mejor = p; }
+    // Arma, una sola vez por proveedor, un índice de qué tan RARA es cada
+    // palabra dentro de SU catálogo — no todas las palabras valen lo
+    // mismo para reconocer un producto. Si 13 productos de un proveedor
+    // dicen "PUDDING ... 100 DUCADOS" y solo se diferencian por el sabor
+    // (CHOCOLATE, LIMON, PISTACHO...), matchear por "PUDDING" no dice
+    // nada — hay que darle mucho más peso a "CHOCOLATE" o "PISTACHO",
+    // que aparecen en 1 o 2 productos nomás. Es la misma idea que usan
+    // los buscadores (TF-IDF), aplicada a nombres de productos cortos.
+    function construirIndiceTokens_(listaProductos) {
+      const productosConTokens = listaProductos.map(p => ({
+        codigo: p.codigo,
+        producto: p.producto,
+        tokens: [...new Set(normalizarTexto_(p.producto).split(' ').filter(t => t.length >= 2))]
+      }));
+      const frecuencia = {};
+      productosConTokens.forEach(p => p.tokens.forEach(t => { frecuencia[t] = (frecuencia[t] || 0) + 1; }));
+      return { productosConTokens, frecuencia };
+    }
+
+    // Matchea pesando cada palabra por lo rara que es en el catálogo de
+    // ESE proveedor (peso = 1 / cuántos productos la usan). Además, si el
+    // mejor candidato y el segundo quedan muy parejos, prefiere NO
+    // adivinar antes que arriesgarse a elegir el producto equivocado.
+    function mejorMatchProducto_(textoLinea, indice) {
+      if (!indice || !indice.productosConTokens.length) return null;
+      const tokensLinea = new Set(normalizarTexto_(textoLinea).split(' ').filter(t => t.length >= 2));
+      if (!tokensLinea.size) return null;
+
+      const candidatos = [];
+      indice.productosConTokens.forEach(p => {
+        if (!p.tokens.length) return;
+        let pesoEncontrado = 0, pesoTotal = 0;
+        p.tokens.forEach(t => {
+          const peso = 1 / (indice.frecuencia[t] || 1);
+          pesoTotal += peso;
+          if (tokensLinea.has(t)) pesoEncontrado += peso;
+        });
+        if (pesoTotal <= 0) return;
+        candidatos.push({ codigo: p.codigo, producto: p.producto, score: pesoEncontrado / pesoTotal });
       });
-      return (mejor && mejorPuntaje >= 0.5) ? mejor : null;
+
+      candidatos.sort((a, b) => b.score - a.score);
+      const mejor = candidatos[0];
+      if (!mejor || mejor.score < 0.55) return null;
+
+      const segundo = candidatos[1];
+      if (segundo && (mejor.score - segundo.score) < 0.15) return null; // muy parejo, mejor no adivinar
+
+      return { codigo: mejor.codigo, producto: mejor.producto };
     }
 
     function procesarTextoRemito_(texto) {
@@ -629,7 +666,7 @@
 
         const textoNormalizado = normalizarTexto_(resto);
         const porAlias = buscarAlias_(textoNormalizado);
-        const match = porAlias || mejorMatchProducto_(resto, productosDelProveedorActivo);
+        const match = porAlias || mejorMatchProducto_(resto, indiceProductosProveedor);
 
         filas.push({
           lineaOriginal: linea,
