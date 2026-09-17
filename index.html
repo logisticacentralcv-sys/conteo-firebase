@@ -1574,9 +1574,13 @@
     document.getElementById('btnVistaCompras').addEventListener('click', abrirVistaCompras);
     document.getElementById('btnCerrarVistaCompras').addEventListener('click', () => {
       document.getElementById('vistaCompras').style.display = 'none';
+      document.querySelector('.container').style.display = 'block';
+      if (modoProveedor) document.getElementById('bannerModoProveedor').style.display = 'block';
     });
 
     async function abrirVistaCompras() {
+      document.querySelector('.container').style.display = 'none';
+      document.getElementById('bannerModoProveedor').style.display = 'none';
       document.getElementById('vistaCompras').style.display = 'block';
       document.getElementById('buscarProductoCompras').value = '';
 
@@ -1605,15 +1609,31 @@
       const cont = document.getElementById('comprasContenido');
       cont.innerHTML = '<div class="cargando">Cargando productos...</div>';
       try {
-        const snap = await getDocs(collection(db, 'productos'));
+        const [snapProductos, snapPosiciones] = await Promise.all([
+          getDocs(collection(db, 'productos')),
+          getDocs(collectionGroup(db, 'posiciones'))
+        ]);
+
+        // "¿Tiene alguna posición cargada?" es una señal más confiable que
+        // stockTotal para saber si un producto se contó alguna vez — un
+        // stockTotal en 0 puede venir de la carga inicial del catálogo
+        // (nunca se tocó) o de que se contó y después se consumió todo;
+        // sin ninguna posición en la subcolección, seguro nunca se contó.
+        const codigosConPosicion = new Set();
+        snapPosiciones.forEach(d => {
+          const data = d.data();
+          if (data.codigo) codigosConPosicion.add(data.codigo);
+        });
+
         productosComprasMaestro = [];
-        snap.forEach(d => {
+        snapProductos.forEach(d => {
           const data = d.data();
           productosComprasMaestro.push({
             codigo: d.id,
             producto: data.producto || '(sin nombre)',
             proveedor: data.proveedor || '',
-            stockTotal: data.stockTotal, // puede venir undefined a propósito: significa "nunca contado"
+            stockTotal: data.stockTotal,
+            tieneAlgunaPosicion: codigosConPosicion.has(d.id),
             posicionPrincipal: data.posicionPrincipal || ''
           });
         });
@@ -1630,8 +1650,9 @@
     // documento) de "se contó y dio 0" (stockTotal existe y vale 0) —
     // son dos situaciones bien distintas para Compras: la primera dice
     // "andá a contarlo", la segunda dice "andá a pedirlo".
-    function estadoStock_(stockTotal) {
-      if (stockTotal === undefined || stockTotal === null) return { texto: 'No contado', clase: 'no-contado' };
+    function estadoStock_(p) {
+      if (!p.tieneAlgunaPosicion) return { texto: 'No contado', clase: 'no-contado' };
+      const stockTotal = Number(p.stockTotal) || 0;
       if (stockTotal === 0) return { texto: 'Sin stock', clase: 'sin-stock' };
       return { texto: String(stockTotal), clase: 'con-stock' };
     }
@@ -1657,7 +1678,7 @@
       }
 
       cont.innerHTML = filas.map(p => {
-        const estado = estadoStock_(p.stockTotal);
+        const estado = estadoStock_(p);
         return `<div class="fila-compras">
           <div class="info">
             <div class="nombre">${escapeHtml(p.producto)}</div>
