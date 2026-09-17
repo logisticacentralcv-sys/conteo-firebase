@@ -102,6 +102,15 @@
     .session-item .cant { font-weight: 700; color: var(--primary); }
 
     .empty-state { color: var(--muted); font-size: 14px; text-align: center; padding: 20px 0; }
+    .cargando { color: var(--muted); font-size: 14px; }
+    .fila-compras { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); gap: 10px; }
+    .fila-compras .info { flex: 1; min-width: 0; }
+    .fila-compras .nombre { font-weight: 600; font-size: 14px; }
+    .fila-compras .detalle { font-size: 12px; color: var(--muted); }
+    .estado-stock { font-weight: 700; font-size: 14px; white-space: nowrap; }
+    .estado-stock.no-contado { color: var(--muted); font-weight: 600; font-size: 12px; }
+    .estado-stock.sin-stock { color: #dc2626; }
+    .estado-stock.con-stock { color: #16a34a; }
 
     .toast {
       position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
@@ -144,6 +153,7 @@
         <p id="subtitulo">Depósito — registro provisorio (Firestore)</p>
       </div>
       <button id="btnModoProveedor" style="flex-shrink:0; background:rgba(255,255,255,0.18); border:none; color:white; border-radius:8px; padding:10px 12px; font-size:13px; font-weight:700; cursor:pointer;">🚚 Ingreso proveedor</button>
+      <button id="btnVistaCompras" style="flex-shrink:0; background:rgba(255,255,255,0.18); border:none; color:white; border-radius:8px; padding:10px 12px; font-size:13px; font-weight:700; cursor:pointer;">🛒 Compras</button>
     </div>
   </header>
 
@@ -290,9 +300,29 @@
     </div>
   </div>
 
+  <div id="vistaCompras" style="display:none; padding:16px; padding-bottom:60px;">
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <strong style="font-size:16px;">🛒 Compras — stock por producto</strong>
+        <button id="btnCerrarVistaCompras" style="background:#e5e7eb; border:none; border-radius:8px; padding:8px 12px; font-weight:600; cursor:pointer;">← Volver</button>
+      </div>
+
+      <select id="selectProveedorCompras" style="width:100%; padding:10px; border:1px solid var(--border); border-radius:10px; font-size:14px; margin-bottom:10px;">
+        <option value="">Todos los proveedores</option>
+      </select>
+      <input type="text" id="buscarProductoCompras" placeholder="🔎 Buscar por producto o código..."
+        style="width:100%; padding:10px; border:1px solid var(--border); border-radius:10px; font-size:14px; margin-bottom:12px;">
+
+      <div id="contadorCompras" style="font-size:12px; color:var(--muted); margin-bottom:8px;"></div>
+      <div id="comprasContenido"><div class="cargando">Cargando productos...</div></div>
+    </div>
+  </div>
+
   <div class="modal-overlay" id="modalStock">
     <div class="modal">
       <h2>Stock actual</h2>
+      <input type="text" id="buscarEnStockModal" placeholder="🔎 Buscar por producto o código..."
+        style="width:100%; padding:10px; border:1px solid var(--border); border-radius:10px; font-size:14px; margin-bottom:10px;">
       <div id="stockContenido"><div class="spinner"></div> Cargando...</div>
       <button class="btn btn-secondary" onclick="cerrarModal('modalStock')">Cerrar</button>
     </div>
@@ -1416,9 +1446,11 @@
     // ---------------- VER STOCK ----------------
     document.getElementById('btnVerStock').addEventListener('click', abrirStock);
     let stockFilasActuales = [];
+    let stockFilasMaestro = [];
 
     async function abrirStock() {
       document.getElementById('modalStock').classList.add('show');
+      document.getElementById('buscarEnStockModal').value = '';
       document.getElementById('stockContenido').innerHTML = '<div class="spinner"></div> Cargando...';
       try {
         const q = query(collectionGroup(db, 'posiciones'), orderBy('codigo'));
@@ -1428,11 +1460,20 @@
           const data = d.data();
           filas.push({ codigo: data.codigo, producto: data.producto, posicion: d.id, cantidad: data.cantidad || 0 });
         });
+        stockFilasMaestro = filas;
         renderStock(filas);
       } catch (err) {
         document.getElementById('stockContenido').textContent = 'Error: ' + err.message;
       }
     }
+
+    document.getElementById('buscarEnStockModal').addEventListener('input', (e) => {
+      const texto = e.target.value.trim().toLowerCase();
+      const filtradas = !texto ? stockFilasMaestro : stockFilasMaestro.filter(f =>
+        (f.producto || '').toLowerCase().includes(texto) || (f.codigo || '').toLowerCase().includes(texto)
+      );
+      renderStock(filtradas);
+    });
 
     function renderStock(filas) {
       stockFilasActuales = filas;
@@ -1526,7 +1567,117 @@
       }
     };
 
+    // ---------------- VISTA COMPRAS: stock por producto, filtrado por proveedor ----------------
+    let productosComprasMaestro = null; // se carga una sola vez por apertura; null = todavía no cargado
+    let proveedoresListadosCompras = false;
+
+    document.getElementById('btnVistaCompras').addEventListener('click', abrirVistaCompras);
+    document.getElementById('btnCerrarVistaCompras').addEventListener('click', () => {
+      document.getElementById('vistaCompras').style.display = 'none';
+    });
+
+    async function abrirVistaCompras() {
+      document.getElementById('vistaCompras').style.display = 'block';
+      document.getElementById('buscarProductoCompras').value = '';
+
+      if (!proveedoresListadosCompras) {
+        proveedoresListadosCompras = true;
+        try {
+          const snap = await getDocs(collection(db, 'proveedores'));
+          const nombres = [];
+          snap.forEach(d => nombres.push(d.data().nombre || d.id));
+          nombres.sort((a, b) => a.localeCompare(b, 'es'));
+          const select = document.getElementById('selectProveedorCompras');
+          nombres.forEach(nombre => {
+            const opt = document.createElement('option');
+            opt.value = nombre; opt.textContent = nombre;
+            select.appendChild(opt);
+          });
+        } catch (err) {
+          console.error('Error cargando proveedores para Compras', err);
+        }
+      }
+
+      await cargarProductosCompras_();
+    }
+
+    async function cargarProductosCompras_() {
+      const cont = document.getElementById('comprasContenido');
+      cont.innerHTML = '<div class="cargando">Cargando productos...</div>';
+      try {
+        const snap = await getDocs(collection(db, 'productos'));
+        productosComprasMaestro = [];
+        snap.forEach(d => {
+          const data = d.data();
+          productosComprasMaestro.push({
+            codigo: d.id,
+            producto: data.producto || '(sin nombre)',
+            proveedor: data.proveedor || '',
+            stockTotal: data.stockTotal, // puede venir undefined a propósito: significa "nunca contado"
+            posicionPrincipal: data.posicionPrincipal || ''
+          });
+        });
+        renderizarVistaCompras_();
+      } catch (err) {
+        cont.innerHTML = `<div class="empty-state">Error: ${err.message}</div>`;
+      }
+    }
+
+    document.getElementById('selectProveedorCompras').addEventListener('change', renderizarVistaCompras_);
+    document.getElementById('buscarProductoCompras').addEventListener('input', renderizarVistaCompras_);
+
+    // Distingue "nunca se contó" (el campo stockTotal no existe en el
+    // documento) de "se contó y dio 0" (stockTotal existe y vale 0) —
+    // son dos situaciones bien distintas para Compras: la primera dice
+    // "andá a contarlo", la segunda dice "andá a pedirlo".
+    function estadoStock_(stockTotal) {
+      if (stockTotal === undefined || stockTotal === null) return { texto: 'No contado', clase: 'no-contado' };
+      if (stockTotal === 0) return { texto: 'Sin stock', clase: 'sin-stock' };
+      return { texto: String(stockTotal), clase: 'con-stock' };
+    }
+
+    function renderizarVistaCompras_() {
+      const cont = document.getElementById('comprasContenido');
+      const contador = document.getElementById('contadorCompras');
+      if (!productosComprasMaestro) return;
+
+      const proveedor = document.getElementById('selectProveedorCompras').value;
+      const texto = document.getElementById('buscarProductoCompras').value.trim().toLowerCase();
+
+      let filas = productosComprasMaestro;
+      if (proveedor) filas = filas.filter(p => p.proveedor === proveedor);
+      if (texto) filas = filas.filter(p => p.producto.toLowerCase().includes(texto) || p.codigo.toLowerCase().includes(texto));
+
+      filas = filas.slice().sort((a, b) => a.producto.localeCompare(b.producto, 'es'));
+      contador.textContent = `${filas.length} producto(s)`;
+
+      if (!filas.length) {
+        cont.innerHTML = '<div class="empty-state">Sin resultados</div>';
+        return;
+      }
+
+      cont.innerHTML = filas.map(p => {
+        const estado = estadoStock_(p.stockTotal);
+        return `<div class="fila-compras">
+          <div class="info">
+            <div class="nombre">${escapeHtml(p.producto)}</div>
+            <div class="detalle">${escapeHtml(p.codigo)}${p.proveedor ? ' · ' + escapeHtml(p.proveedor) : ''}${p.posicionPrincipal ? ' · pos: ' + escapeHtml(p.posicionPrincipal) : ''}</div>
+          </div>
+          <div class="estado-stock ${estado.clase}">${estado.texto}</div>
+        </div>`;
+      }).join('');
+    }
+
     window.cerrarModal = function(id) { document.getElementById(id).classList.remove('show'); };
+
+    // Tocar el fondo oscuro de cualquier modal lo cierra (antes solo se
+    // podía cerrar con el botón "Cerrar", que en pantallas largas quedaba
+    // abajo del todo y había que bajar para encontrarlo).
+    document.querySelectorAll('.modal-overlay').forEach(overlay => {
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) cerrarModal(overlay.id);
+      });
+    });
 
     // ---------------- HELPERS ----------------
     function escapeHtml(str) {
