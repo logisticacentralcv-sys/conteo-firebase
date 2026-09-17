@@ -1688,7 +1688,7 @@
 
       cont.innerHTML = filas.map(p => {
         const estado = estadoStock_(p);
-        return `<div class="fila-compras">
+        return `<div class="fila-compras" onclick="window.__contarDesdeCompras('${escapeHtml(p.codigo).replace(/'/g, "\\'")}')" style="cursor:pointer;">
           <div class="info">
             <div class="nombre">${escapeHtml(p.producto)}</div>
             <div class="detalle">${escapeHtml(p.codigo)}${p.proveedor ? ' · ' + escapeHtml(p.proveedor) : ''}${p.posicionPrincipal ? ' · pos: ' + escapeHtml(p.posicionPrincipal) : ''}</div>
@@ -1697,6 +1697,17 @@
         </div>`;
       }).join('');
     }
+
+    // Tocar un producto de la lista de Compras cierra esa vista y lo abre
+    // directo en la pantalla de conteo, como si se acabara de escanear —
+    // así el que cuenta puede ir tocando uno por uno los que le pasaron
+    // de un proveedor, sin tener que volver a buscarlos a mano.
+    window.__contarDesdeCompras = function(codigo) {
+      document.getElementById('vistaCompras').style.display = 'none';
+      document.querySelector('.container').style.display = 'block';
+      if (modoProveedor) document.getElementById('bannerModoProveedor').style.display = 'block';
+      buscarProducto(codigo);
+    };
 
     window.cerrarModal = function(id) { document.getElementById(id).classList.remove('show'); };
 
