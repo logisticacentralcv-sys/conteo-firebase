@@ -152,8 +152,10 @@
         <h1>📦 Conteo de Stock</h1>
         <p id="subtitulo">Depósito — registro provisorio (Firestore)</p>
       </div>
-      <button id="btnModoProveedor" style="flex-shrink:0; background:rgba(255,255,255,0.18); border:none; color:white; border-radius:8px; padding:10px 12px; font-size:13px; font-weight:700; cursor:pointer;">🚚 Ingreso proveedor</button>
-      <button id="btnVistaCompras" style="flex-shrink:0; background:rgba(255,255,255,0.18); border:none; color:white; border-radius:8px; padding:10px 12px; font-size:13px; font-weight:700; cursor:pointer;">🛒 Compras</button>
+      <div style="display:flex; gap:8px; flex-shrink:0;">
+        <button id="btnModoProveedor" style="flex-shrink:0; background:rgba(255,255,255,0.18); border:none; color:white; border-radius:8px; padding:10px 12px; font-size:13px; font-weight:700; cursor:pointer;">🚚 Ingreso proveedor</button>
+        <button id="btnVistaCompras" style="flex-shrink:0; background:rgba(255,255,255,0.18); border:none; color:white; border-radius:8px; padding:10px 12px; font-size:13px; font-weight:700; cursor:pointer;">🛒 Compras</button>
+      </div>
     </div>
   </header>
 
@@ -387,6 +389,13 @@
     // Si el producto es nuevo (nunca se contó, no tiene posición principal
     // todavía), simplemente pide la posición como en el modo normal.
     document.getElementById('btnModoProveedor').addEventListener('click', () => {
+      // Si estabas en la vista de Compras, hay que volver a la pantalla
+      // principal primero — antes el banner de proveedor aparecía ARRIBA
+      // de Compras en vez de reemplazarla.
+      if (document.getElementById('vistaCompras').style.display !== 'none') {
+        document.getElementById('vistaCompras').style.display = 'none';
+        document.querySelector('.container').style.display = 'block';
+      }
       modoProveedor = !modoProveedor;
       const btn = document.getElementById('btnModoProveedor');
       const banner = document.getElementById('bannerModoProveedor');
