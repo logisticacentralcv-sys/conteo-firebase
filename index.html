@@ -193,6 +193,19 @@
       <div style="font-size:11px; color:var(--muted); margin-top:6px;">La búsqueda por nombre encuentra lo que <strong>empieza con</strong> lo que escribís, no lo que lo contiene en el medio.</div>
     </div>
 
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <strong>🔎 Ver / filtrar por proveedor</strong>
+        <button id="btnActualizarProveedorInline" title="Actualizar" style="background:none; border:none; font-size:16px; cursor:pointer;">🔄</button>
+      </div>
+      <select id="selectProveedorInline" style="width:100%; padding:10px; border:1px solid var(--border); border-radius:10px; font-size:14px; margin-bottom:8px;">
+        <option value="">— Elegir proveedor —</option>
+      </select>
+      <input type="text" id="buscarProductoInline" placeholder="🔎 Filtrar por nombre o código..." style="display:none; width:100%; padding:10px; border:1px solid var(--border); border-radius:10px; font-size:14px; margin-bottom:8px;">
+      <div id="contadorProveedorInline" style="font-size:12px; color:var(--muted); margin-bottom:6px;"></div>
+      <div id="listaProveedorInline" style="max-height:340px; overflow-y:auto;"></div>
+    </div>
+
     <!-- PRODUCTO ENCONTRADO -->
     <div class="card producto-box" id="productoBox">
       <div class="producto-codigo" id="pCodigo"></div>
@@ -1577,8 +1590,34 @@
     };
 
     // ---------------- VISTA COMPRAS: stock por producto, filtrado por proveedor ----------------
-    let productosComprasMaestro = null; // se carga una sola vez por apertura; null = todavía no cargado
-    let proveedoresListadosCompras = false;
+    let productosComprasMaestro = null; // se carga una sola vez; null = todavía no cargado
+
+    let listaProveedoresCache = null; // se carga una sola vez, se reutiliza en cualquier selector de proveedor
+
+    async function obtenerListaProveedores_() {
+      if (listaProveedoresCache) return listaProveedoresCache;
+      const snap = await getDocs(collection(db, 'proveedores'));
+      const nombres = [];
+      snap.forEach(d => nombres.push(d.data().nombre || d.id));
+      nombres.sort((a, b) => a.localeCompare(b, 'es'));
+      listaProveedoresCache = nombres;
+      return nombres;
+    }
+
+    async function poblarSelectProveedores_(selectEl) {
+      if (selectEl.dataset.poblado === '1') return; // ya se pobló este select, no duplicar opciones
+      try {
+        const nombres = await obtenerListaProveedores_();
+        nombres.forEach(nombre => {
+          const opt = document.createElement('option');
+          opt.value = nombre; opt.textContent = nombre;
+          selectEl.appendChild(opt);
+        });
+        selectEl.dataset.poblado = '1';
+      } catch (err) {
+        console.error('Error cargando proveedores', err);
+      }
+    }
 
     document.getElementById('btnVistaCompras').addEventListener('click', abrirVistaCompras);
     document.getElementById('btnCerrarVistaCompras').addEventListener('click', () => {
@@ -1593,25 +1632,9 @@
       document.getElementById('vistaCompras').style.display = 'block';
       document.getElementById('buscarProductoCompras').value = '';
 
-      if (!proveedoresListadosCompras) {
-        proveedoresListadosCompras = true;
-        try {
-          const snap = await getDocs(collection(db, 'proveedores'));
-          const nombres = [];
-          snap.forEach(d => nombres.push(d.data().nombre || d.id));
-          nombres.sort((a, b) => a.localeCompare(b, 'es'));
-          const select = document.getElementById('selectProveedorCompras');
-          nombres.forEach(nombre => {
-            const opt = document.createElement('option');
-            opt.value = nombre; opt.textContent = nombre;
-            select.appendChild(opt);
-          });
-        } catch (err) {
-          console.error('Error cargando proveedores para Compras', err);
-        }
-      }
-
-      await cargarProductosCompras_();
+      await poblarSelectProveedores_(document.getElementById('selectProveedorCompras'));
+      if (!productosComprasMaestro) await cargarProductosCompras_();
+      renderizarVistaCompras_();
     }
 
     async function cargarProductosCompras_() {
@@ -1646,14 +1669,64 @@
             posicionPrincipal: data.posicionPrincipal || ''
           });
         });
-        renderizarVistaCompras_();
       } catch (err) {
         cont.innerHTML = `<div class="empty-state">Error: ${err.message}</div>`;
+        throw err;
       }
     }
 
     document.getElementById('selectProveedorCompras').addEventListener('change', renderizarVistaCompras_);
     document.getElementById('buscarProductoCompras').addEventListener('input', renderizarVistaCompras_);
+
+    // ---------------- FILTRO POR PROVEEDOR EN LA PANTALLA PRINCIPAL ----------------
+    // Mismo cache/lógica que la vista Compras, pero embebido en la
+    // pantalla de conteo — así el que cuenta no tiene que salir de acá
+    // para ver "qué tiene tal proveedor" cuando Compras le pide
+    // actualizar el stock de alguno puntual.
+    poblarSelectProveedores_(document.getElementById('selectProveedorInline'));
+
+    document.getElementById('selectProveedorInline').addEventListener('change', async () => {
+      const cont = document.getElementById('listaProveedorInline');
+      const buscador = document.getElementById('buscarProductoInline');
+      const proveedor = document.getElementById('selectProveedorInline').value;
+
+      if (!proveedor) {
+        buscador.style.display = 'none';
+        cont.innerHTML = '';
+        document.getElementById('contadorProveedorInline').textContent = '';
+        return;
+      }
+      buscador.style.display = 'block';
+
+      if (!productosComprasMaestro) {
+        cont.innerHTML = '<div class="cargando">Cargando productos...</div>';
+        try { await cargarProductosCompras_(); } catch (err) { return; }
+      }
+      renderizarListaProveedorInline_();
+    });
+
+    document.getElementById('buscarProductoInline').addEventListener('input', renderizarListaProveedorInline_);
+
+    document.getElementById('btnActualizarProveedorInline').addEventListener('click', async () => {
+      const cont = document.getElementById('listaProveedorInline');
+      cont.innerHTML = '<div class="cargando">Actualizando...</div>';
+      try { await cargarProductosCompras_(); } catch (err) { return; }
+      renderizarListaProveedorInline_();
+    });
+
+    function renderizarListaProveedorInline_() {
+      const proveedor = document.getElementById('selectProveedorInline').value;
+      const texto = document.getElementById('buscarProductoInline').value.trim().toLowerCase();
+      const cont = document.getElementById('listaProveedorInline');
+      const contador = document.getElementById('contadorProveedorInline');
+      if (!proveedor || !productosComprasMaestro) return;
+
+      const filas = filtrarProductosMaestro_(proveedor, texto);
+      contador.textContent = `${filas.length} producto(s)`;
+      cont.innerHTML = filas.length
+        ? filas.map(filaComprasHtml_).join('')
+        : '<div class="empty-state">Sin resultados</div>';
+    }
 
     // Distingue "nunca se contó" (el campo stockTotal no existe en el
     // documento) de "se contó y dio 0" (stockTotal existe y vale 0) —
@@ -1666,6 +1739,25 @@
       return { texto: String(stockTotal), clase: 'con-stock' };
     }
 
+    function filtrarProductosMaestro_(proveedor, texto) {
+      if (!productosComprasMaestro) return [];
+      let filas = productosComprasMaestro;
+      if (proveedor) filas = filas.filter(p => p.proveedor === proveedor);
+      if (texto) filas = filas.filter(p => p.producto.toLowerCase().includes(texto) || p.codigo.toLowerCase().includes(texto));
+      return filas.slice().sort((a, b) => a.producto.localeCompare(b.producto, 'es'));
+    }
+
+    function filaComprasHtml_(p) {
+      const estado = estadoStock_(p);
+      return `<div class="fila-compras" onclick="window.__contarDesdeCompras('${escapeHtml(p.codigo).replace(/'/g, "\\'")}')" style="cursor:pointer;">
+        <div class="info">
+          <div class="nombre">${escapeHtml(p.producto)}</div>
+          <div class="detalle">${escapeHtml(p.codigo)}${p.proveedor ? ' · ' + escapeHtml(p.proveedor) : ''}${p.posicionPrincipal ? ' · pos: ' + escapeHtml(p.posicionPrincipal) : ''}</div>
+        </div>
+        <div class="estado-stock ${estado.clase}">${estado.texto}</div>
+      </div>`;
+    }
+
     function renderizarVistaCompras_() {
       const cont = document.getElementById('comprasContenido');
       const contador = document.getElementById('contadorCompras');
@@ -1673,29 +1765,12 @@
 
       const proveedor = document.getElementById('selectProveedorCompras').value;
       const texto = document.getElementById('buscarProductoCompras').value.trim().toLowerCase();
-
-      let filas = productosComprasMaestro;
-      if (proveedor) filas = filas.filter(p => p.proveedor === proveedor);
-      if (texto) filas = filas.filter(p => p.producto.toLowerCase().includes(texto) || p.codigo.toLowerCase().includes(texto));
-
-      filas = filas.slice().sort((a, b) => a.producto.localeCompare(b.producto, 'es'));
+      const filas = filtrarProductosMaestro_(proveedor, texto);
       contador.textContent = `${filas.length} producto(s)`;
 
-      if (!filas.length) {
-        cont.innerHTML = '<div class="empty-state">Sin resultados</div>';
-        return;
-      }
-
-      cont.innerHTML = filas.map(p => {
-        const estado = estadoStock_(p);
-        return `<div class="fila-compras" onclick="window.__contarDesdeCompras('${escapeHtml(p.codigo).replace(/'/g, "\\'")}')" style="cursor:pointer;">
-          <div class="info">
-            <div class="nombre">${escapeHtml(p.producto)}</div>
-            <div class="detalle">${escapeHtml(p.codigo)}${p.proveedor ? ' · ' + escapeHtml(p.proveedor) : ''}${p.posicionPrincipal ? ' · pos: ' + escapeHtml(p.posicionPrincipal) : ''}</div>
-          </div>
-          <div class="estado-stock ${estado.clase}">${estado.texto}</div>
-        </div>`;
-      }).join('');
+      cont.innerHTML = filas.length
+        ? filas.map(filaComprasHtml_).join('')
+        : '<div class="empty-state">Sin resultados</div>';
     }
 
     // Tocar un producto de la lista de Compras cierra esa vista y lo abre
