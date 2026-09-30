@@ -314,7 +314,6 @@
   </div>
 
   <div class="bottom-bar">
-    <button class="btn btn-secondary" id="btnVerStock">📊 Ver stock</button>
   </div>
 
   <div class="modal-overlay" id="modalRevisionRemito">
@@ -363,17 +362,9 @@
 
       <div id="resultadoPedidoContenido" style="margin-top:14px; overflow-x:auto;"></div>
 
-      <button id="btnDescargarPedidoPDF" class="btn btn-success" style="display:none; margin-top:12px; background:#1d4ed8;">📄 Descargar PDF para el proveedor</button>
-    </div>
-  </div>
-
-  <div class="modal-overlay" id="modalStock">
-    <div class="modal">
-      <h2>Stock actual</h2>
-      <input type="text" id="buscarEnStockModal" placeholder="🔎 Buscar por producto o código..."
-        style="width:100%; padding:10px; border:1px solid var(--border); border-radius:10px; font-size:14px; margin-bottom:10px;">
-      <div id="stockContenido"><div class="spinner"></div> Cargando...</div>
-      <button class="btn btn-secondary" onclick="cerrarModal('modalStock')">Cerrar</button>
+      <div id="barraPedidoPDF" class="bottom-bar" style="display:none;">
+        <button id="btnDescargarPedidoPDF" class="btn btn-success" style="background:#1d4ed8;">📄 Descargar PDF para el proveedor</button>
+      </div>
     </div>
   </div>
 
@@ -1539,128 +1530,6 @@
     }
 
     // ---------------- VER STOCK ----------------
-    document.getElementById('btnVerStock').addEventListener('click', abrirStock);
-    let stockFilasActuales = [];
-    let stockFilasMaestro = [];
-
-    async function abrirStock() {
-      document.getElementById('modalStock').classList.add('show');
-      document.getElementById('buscarEnStockModal').value = '';
-      document.getElementById('stockContenido').innerHTML = '<div class="spinner"></div> Cargando...';
-      try {
-        const q = query(collectionGroup(db, 'posiciones'), orderBy('codigo'));
-        const snap = await getDocs(q);
-        const filas = [];
-        snap.forEach(d => {
-          const data = d.data();
-          filas.push({ codigo: data.codigo, producto: data.producto, posicion: d.id, cantidad: data.cantidad || 0 });
-        });
-        stockFilasMaestro = filas;
-        renderStock(filas);
-      } catch (err) {
-        document.getElementById('stockContenido').textContent = 'Error: ' + err.message;
-      }
-    }
-
-    document.getElementById('buscarEnStockModal').addEventListener('input', (e) => {
-      const texto = e.target.value.trim().toLowerCase();
-      const filtradas = !texto ? stockFilasMaestro : stockFilasMaestro.filter(f =>
-        (f.producto || '').toLowerCase().includes(texto) || (f.codigo || '').toLowerCase().includes(texto)
-      );
-      renderStock(filtradas);
-    });
-
-    function renderStock(filas) {
-      stockFilasActuales = filas;
-      if (!filas.length) {
-        document.getElementById('stockContenido').innerHTML = '<div class="empty-state">Sin stock cargado todavía</div>';
-        return;
-      }
-      let html = '<table><tr><th>Código</th><th>Producto</th><th>Pos.</th><th>Cant.</th><th></th></tr>';
-      filas.forEach((f, idx) => {
-        html += `<tr id="fila-stock-${idx}">
-          <td>${escapeHtml(f.codigo)}</td>
-          <td>${escapeHtml(f.producto)}</td>
-          <td>${escapeHtml(f.posicion)}</td>
-          <td><strong>${f.cantidad}</strong></td>
-          <td><button onclick="window.__editarFilaStock(${idx})" style="background:none;border:none;font-size:16px;cursor:pointer;">✏️</button></td>
-        </tr>`;
-      });
-      html += '</table>';
-      document.getElementById('stockContenido').innerHTML = html;
-    }
-
-    window.__editarFilaStock = function(idx) {
-      const f = stockFilasActuales[idx];
-      const fila = document.getElementById('fila-stock-' + idx);
-      fila.innerHTML = `
-        <td colspan="5">
-          <div style="padding:8px 0;">
-            <div style="font-weight:600; margin-bottom:6px;">${escapeHtml(f.producto)}
-              <span style="color:var(--muted); font-weight:400;">(${escapeHtml(f.codigo)})</span>
-            </div>
-            <div style="display:flex; gap:8px; margin-bottom:8px;">
-              <input type="text" id="editPos-${idx}" value="${escapeHtml(f.posicion)}" placeholder="Posición"
-                style="flex:1; padding:8px; border:1px solid var(--border); border-radius:8px; font-size:14px;">
-              <input type="number" id="editCant-${idx}" value="${f.cantidad}" min="0"
-                style="width:80px; padding:8px; border:1px solid var(--border); border-radius:8px; font-size:14px;">
-            </div>
-            <div style="display:flex; gap:8px;">
-              <button onclick="window.__guardarEdicionStock(${idx})"
-                style="flex:1; padding:8px; border:none; border-radius:8px; background:var(--green); color:white; font-weight:600;">Guardar</button>
-              <button onclick="window.__abrirStockDesdeCero()"
-                style="flex:1; padding:8px; border:none; border-radius:8px; background:#e5e7eb;">Cancelar</button>
-            </div>
-            <div style="font-size:11px; color:var(--muted); margin-top:6px;">Cantidad en 0 elimina esa posición.</div>
-          </div>
-        </td>
-      `;
-    };
-
-    window.__abrirStockDesdeCero = function() { abrirStock(); };
-
-    window.__guardarEdicionStock = async function(idx) {
-      const f = stockFilasActuales[idx];
-      const nuevaPosicion = document.getElementById('editPos-' + idx).value.trim();
-      const nuevaCantidad = parseInt(document.getElementById('editCant-' + idx).value, 10);
-      if (!nuevaPosicion) { mostrarToast("La posición no puede estar vacía", true); return; }
-      if (isNaN(nuevaCantidad) || nuevaCantidad < 0) { mostrarToast("Cantidad inválida", true); return; }
-
-      try {
-        await runTransaction(db, async (tx) => {
-          const productoRef = doc(db, 'productos', f.codigo);
-          const origenRef = doc(db, 'productos', f.codigo, 'posiciones', f.posicion);
-          const origenSnap = await tx.get(origenRef);
-          const cantidadAnterior = origenSnap.exists() ? (origenSnap.data().cantidad || 0) : 0;
-
-          if (f.posicion === nuevaPosicion) {
-            const delta = nuevaCantidad - cantidadAnterior;
-            if (nuevaCantidad === 0) tx.delete(origenRef);
-            else tx.set(origenRef, { cantidad: nuevaCantidad, ultimaActualizacion: serverTimestamp() }, { merge: true });
-            tx.update(productoRef, { stockTotal: increment(delta), ultimaActualizacion: serverTimestamp() });
-            return;
-          }
-
-          const destinoRef = doc(db, 'productos', f.codigo, 'posiciones', nuevaPosicion);
-          const destinoSnap = await tx.get(destinoRef);
-          const cantidadDestinoAnterior = destinoSnap.exists() ? (destinoSnap.data().cantidad || 0) : 0;
-
-          tx.delete(origenRef);
-          if (nuevaCantidad > 0) {
-            tx.set(destinoRef, {
-              codigo: f.codigo, producto: f.producto,
-              cantidad: cantidadDestinoAnterior + nuevaCantidad,
-              ultimaActualizacion: serverTimestamp()
-            }, { merge: true });
-          }
-          tx.update(productoRef, { stockTotal: increment(nuevaCantidad - cantidadAnterior), ultimaActualizacion: serverTimestamp() });
-        });
-        mostrarToast("Actualizado ✓");
-        abrirStock();
-      } catch (err) {
-        mostrarToast("Error: " + err.message, true);
-      }
-    };
 
     // ---------------- VISTA COMPRAS: stock por producto, filtrado por proveedor ----------------
     let productosComprasMaestro = null; // se carga una sola vez; null = todavía no cargado
@@ -1777,7 +1646,7 @@
       ocultarVistasEspeciales_();
       document.getElementById('vistaArmarPedido').style.display = 'block';
       document.getElementById('resultadoPedidoContenido').innerHTML = '';
-      document.getElementById('btnDescargarPedidoPDF').style.display = 'none';
+      document.getElementById('barraPedidoPDF').style.display = 'none';
       await poblarSelectProveedores_(document.getElementById('selectProveedorPedido'));
     }
 
@@ -1814,7 +1683,7 @@
       if (!proveedor) {
         filasPedidoActual = [];
         document.getElementById('resultadoPedidoContenido').innerHTML = '';
-        document.getElementById('btnDescargarPedidoPDF').style.display = 'none';
+        document.getElementById('barraPedidoPDF').style.display = 'none';
         return;
       }
       mostrarProductosProveedor_(proveedor);
@@ -1933,7 +1802,16 @@
 
     function renderizarPedido_() {
       const cont = document.getElementById('resultadoPedidoContenido');
-      if (!filasPedidoActual.length) { cont.innerHTML = '<div class="empty-state">Sin filas</div>'; document.getElementById('btnDescargarPedidoPDF').style.display = 'none'; return; }
+      if (!filasPedidoActual.length) { cont.innerHTML = '<div class="empty-state">Sin filas</div>'; document.getElementById('barraPedidoPDF').style.display = 'none'; return; }
+
+      // Los que ya tienen venta cargada (completos) van arriba de todo;
+      // los sin match del proveedor, al final. Sort estable: dentro de
+      // cada grupo mantienen el orden que ya traían.
+      filasPedidoActual.sort((a, b) => {
+        const rangoA = a.sinMatch ? 2 : (a.vendido > 0 ? 0 : 1);
+        const rangoB = b.sinMatch ? 2 : (b.vendido > 0 ? 0 : 1);
+        return rangoA - rangoB;
+      });
 
       let html = '<table style="width:100%; border-collapse:collapse; font-size:13px;">';
       html += '<tr><th style="text-align:left; padding:6px 4px;">Código</th><th style="text-align:left; padding:6px 4px;">Producto</th><th style="text-align:left; padding:6px 4px;">Stock</th><th style="text-align:left; padding:6px 4px;">Vendido</th><th style="text-align:left; padding:6px 4px;">Colchón</th><th style="text-align:left; padding:6px 4px;">A pedir</th><th style="text-align:left; padding:6px 4px;">Unidad</th><th></th></tr>';
@@ -1962,7 +1840,7 @@
       });
       html += '</table>';
       cont.innerHTML = html;
-      document.getElementById('btnDescargarPedidoPDF').style.display = 'inline-block';
+      document.getElementById('barraPedidoPDF').style.display = 'flex';
     }
 
     document.getElementById('resultadoPedidoContenido').addEventListener('input', (e) => {
@@ -2055,7 +1933,7 @@
           pdf.setFont(undefined, 'normal');
           pdf.setTextColor(80, 80, 80);
           pdf.text(`N°: ${numeroOC}`, anchoPagina - MARGEN, 25, { align: 'right' });
-          pdf.text(`Fecha: ${ahora.toLocaleDateString('es-AR')}`, anchoPagina - MARGEN, 30, { align: 'right' });
+          pdf.text(`Fecha: ${ahora.toLocaleDateString('es-AR')} ${ahora.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}`, anchoPagina - MARGEN, 30, { align: 'right' });
 
           pdf.setDrawColor(...COLOR_MARCA_VERDE);
           pdf.setLineWidth(1);
