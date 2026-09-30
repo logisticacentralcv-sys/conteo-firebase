@@ -2017,73 +2017,117 @@
       btn.textContent = 'Generando...';
       try {
         const { jsPDF } = await import('https://cdn.jsdelivr.net/npm/jspdf@2.5.1/+esm');
-        const { default: autoTable } = await import('https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/+esm');
 
         const pdf = new jsPDF();
         const ahora = new Date();
         const numeroOC = `OC-${ahora.getFullYear()}${String(ahora.getMonth() + 1).padStart(2, '0')}${String(ahora.getDate()).padStart(2, '0')}-${String(ahora.getHours()).padStart(2, '0')}${String(ahora.getMinutes()).padStart(2, '0')}`;
+        const anchoPagina = pdf.internal.pageSize.getWidth();
+        const altoPagina = pdf.internal.pageSize.getHeight();
+        const MARGEN = 14;
+        const ANCHO_UTIL = anchoPagina - MARGEN * 2;
 
-        // Logo arriba a la izquierda
-        try { pdf.addImage(LOGO_BASE64, 'PNG', 14, 10, 32, 21); } catch (e) { /* si el logo falla, seguimos sin él */ }
+        // Columnas de la tabla: [x, ancho]
+        const COL_CODIGO = { x: MARGEN, w: 34 };
+        const COL_DESCRIPCION = { x: MARGEN + 34, w: ANCHO_UTIL - 34 - 26 - 32 };
+        const COL_CANTIDAD = { x: MARGEN + 34 + (ANCHO_UTIL - 34 - 26 - 32), w: 26 };
+        const COL_UNIDAD = { x: MARGEN + ANCHO_UTIL - 32, w: 32 };
 
-        // Título y datos de la orden, arriba a la derecha
-        pdf.setFontSize(18);
-        pdf.setFont(undefined, 'bold');
-        pdf.setTextColor(...COLOR_MARCA_VERDE);
-        pdf.text('ORDEN DE COMPRA', 196, 18, { align: 'right' });
-        pdf.setFontSize(10);
+        function dibujarEncabezadoTabla_(y) {
+          pdf.setFillColor(...COLOR_MARCA_VERDE);
+          pdf.rect(MARGEN, y, ANCHO_UTIL, 8, 'F');
+          pdf.setTextColor(255, 255, 255);
+          pdf.setFont(undefined, 'bold');
+          pdf.setFontSize(9);
+          pdf.text('Código', COL_CODIGO.x + 2, y + 5.5);
+          pdf.text('Descripción', COL_DESCRIPCION.x + 2, y + 5.5);
+          pdf.text('Cantidad', COL_CANTIDAD.x + COL_CANTIDAD.w / 2, y + 5.5, { align: 'center' });
+          pdf.text('Unidad', COL_UNIDAD.x + COL_UNIDAD.w / 2, y + 5.5, { align: 'center' });
+          return y + 8;
+        }
+
+        function encabezadoPagina_() {
+          try { pdf.addImage(LOGO_BASE64, 'PNG', MARGEN, 10, 32, 21); } catch (e) { /* si el logo falla, seguimos sin él */ }
+          pdf.setFontSize(18);
+          pdf.setFont(undefined, 'bold');
+          pdf.setTextColor(...COLOR_MARCA_VERDE);
+          pdf.text('ORDEN DE COMPRA', anchoPagina - MARGEN, 18, { align: 'right' });
+          pdf.setFontSize(10);
+          pdf.setFont(undefined, 'normal');
+          pdf.setTextColor(80, 80, 80);
+          pdf.text(`N°: ${numeroOC}`, anchoPagina - MARGEN, 25, { align: 'right' });
+          pdf.text(`Fecha: ${ahora.toLocaleDateString('es-AR')}`, anchoPagina - MARGEN, 30, { align: 'right' });
+
+          pdf.setDrawColor(...COLOR_MARCA_VERDE);
+          pdf.setLineWidth(1);
+          pdf.line(MARGEN, 38, anchoPagina - MARGEN, 38);
+
+          pdf.setFontSize(11);
+          pdf.setTextColor(30, 30, 30);
+          pdf.setFont(undefined, 'bold');
+          pdf.text('Proveedor:', MARGEN, 47);
+          pdf.setFont(undefined, 'normal');
+          pdf.text(String(proveedor), MARGEN + 28, 47);
+
+          pdf.setFont(undefined, 'bold');
+          pdf.text('Emitido por:', MARGEN, 53);
+          pdf.setFont(undefined, 'normal');
+          pdf.text(NOMBRE_EMPRESA, MARGEN + 28, 53);
+
+          return dibujarEncabezadoTabla_(60);
+        }
+
+        let y = encabezadoPagina_();
         pdf.setFont(undefined, 'normal');
-        pdf.setTextColor(80, 80, 80);
-        pdf.text(`N°: ${numeroOC}`, 196, 25, { align: 'right' });
-        pdf.text(`Fecha: ${ahora.toLocaleDateString('es-AR')}`, 196, 30, { align: 'right' });
+        pdf.setFontSize(9);
 
-        // Línea separadora con el color de marca
-        pdf.setDrawColor(...COLOR_MARCA_VERDE);
-        pdf.setLineWidth(1);
-        pdf.line(14, 38, 196, 38);
-
-        // Datos de emisor / proveedor
-        pdf.setFontSize(11);
-        pdf.setTextColor(30, 30, 30);
-        pdf.setFont(undefined, 'bold');
-        pdf.text('Proveedor:', 14, 47);
-        pdf.setFont(undefined, 'normal');
-        pdf.text(String(proveedor), 42, 47);
-
-        pdf.setFont(undefined, 'bold');
-        pdf.text('Emitido por:', 14, 53);
-        pdf.setFont(undefined, 'normal');
-        pdf.text(NOMBRE_EMPRESA, 42, 53);
-
-        // Tabla de ítems (con librería, no texto suelto — bordes, encabezado
-        // con el color de marca, filas alternadas)
-        const filasTabla = filasValidas.map(f => {
+        filasValidas.forEach((f, idx) => {
           const esBulto = f.unidad === 'bultos' && f.bulto;
           const cantidadTexto = esBulto ? `${Math.ceil(f.cantidadPedir / f.bulto.unidadesPorBulto)}` : `${f.cantidadPedir}`;
           const unidadTexto = esBulto ? `Caja(s) x${f.bulto.unidadesPorBulto}` : 'Unidades';
-          return [String(f.codigo), String(f.producto), cantidadTexto, unidadTexto];
+
+          const lineasDescripcion = pdf.splitTextToSize(String(f.producto), COL_DESCRIPCION.w - 4);
+          const alturaFila = Math.max(7, lineasDescripcion.length * 4.2 + 2.5);
+
+          // Salto de página si no entra la fila completa
+          if (y + alturaFila > altoPagina - 20) {
+            pdf.addPage();
+            y = dibujarEncabezadoTabla_(14);
+            pdf.setFont(undefined, 'normal');
+            pdf.setFontSize(9);
+          }
+
+          if (idx % 2 === 1) {
+            pdf.setFillColor(245, 248, 244);
+            pdf.rect(MARGEN, y, ANCHO_UTIL, alturaFila, 'F');
+          }
+
+          pdf.setTextColor(30, 30, 30);
+          pdf.text(String(f.codigo), COL_CODIGO.x + 2, y + 5);
+          pdf.text(lineasDescripcion, COL_DESCRIPCION.x + 2, y + 5);
+          pdf.text(cantidadTexto, COL_CANTIDAD.x + COL_CANTIDAD.w / 2, y + 5, { align: 'center' });
+          pdf.text(unidadTexto, COL_UNIDAD.x + COL_UNIDAD.w / 2, y + 5, { align: 'center' });
+
+          pdf.setDrawColor(225, 225, 225);
+          pdf.setLineWidth(0.2);
+          pdf.line(MARGEN, y + alturaFila, MARGEN + ANCHO_UTIL, y + alturaFila);
+
+          y += alturaFila;
         });
 
-        autoTable(pdf, {
-          startY: 60,
-          head: [['Código', 'Descripción', 'Cantidad', 'Unidad']],
-          body: filasTabla,
-          styles: { fontSize: 9, cellPadding: 3 },
-          headStyles: { fillColor: COLOR_MARCA_VERDE, textColor: 255, fontStyle: 'bold' },
-          alternateRowStyles: { fillColor: [245, 248, 244] },
-          columnStyles: { 0: { cellWidth: 30 }, 2: { halign: 'center', cellWidth: 25 }, 3: { halign: 'center', cellWidth: 30 } }
-        });
-
-        const finalY = pdf.lastAutoTable.finalY + 10;
+        y += 10;
+        if (y > altoPagina - 20) { pdf.addPage(); y = 20; }
         pdf.setFontSize(10);
         pdf.setTextColor(60, 60, 60);
-        pdf.text(`Total de líneas: ${filasValidas.length}`, 14, finalY);
+        pdf.text(`Total de líneas: ${filasValidas.length}`, MARGEN, y);
 
-        // Pie de página
-        const alturaPagina = pdf.internal.pageSize.getHeight();
-        pdf.setFontSize(8);
-        pdf.setTextColor(150, 150, 150);
-        pdf.text(`Generado automáticamente por ${NOMBRE_EMPRESA} — ${ahora.toLocaleString('es-AR')}`, 14, alturaPagina - 10);
+        // Pie de página en todas las hojas generadas
+        const totalPaginas = pdf.internal.getNumberOfPages();
+        for (let p = 1; p <= totalPaginas; p++) {
+          pdf.setPage(p);
+          pdf.setFontSize(8);
+          pdf.setTextColor(150, 150, 150);
+          pdf.text(`Generado automáticamente por ${NOMBRE_EMPRESA} — ${ahora.toLocaleString('es-AR')}`, MARGEN, altoPagina - 10);
+        }
 
         pdf.save(`${numeroOC}_${proveedor.replace(/\s+/g, '_')}.pdf`);
       } catch (err) {
