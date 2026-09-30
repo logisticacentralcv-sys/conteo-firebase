@@ -442,6 +442,20 @@
       document.getElementById('vistaArmarPedido').style.display = 'none';
     }
 
+    // Antes esto solo ocultaba el banner naranja al entrar a Compras o
+    // Armar Pedido, pero el botón "Ingreso proveedor" del header seguía
+    // pintado de naranja (modoProveedor seguía en true por dentro) —
+    // quedaba "prendido" visualmente en pantallas que no tienen nada que
+    // ver con eso. Esto apaga el modo del todo, no solo el banner.
+    function desactivarModoProveedor_() {
+      if (!modoProveedor) return;
+      modoProveedor = false;
+      document.getElementById('bannerModoProveedor').style.display = 'none';
+      document.getElementById('btnModoProveedor').style.background = 'rgba(255,255,255,0.18)';
+      document.getElementById('tituloSesion').textContent = 'Contado en esta sesión';
+      document.getElementById('btnConfirmar').textContent = '✔ Confirmar y guardar';
+    }
+
     document.getElementById('btnModoProveedor').addEventListener('click', () => {
       if (document.getElementById('vistaCompras').style.display !== 'none' || document.getElementById('vistaArmarPedido').style.display !== 'none') {
         ocultarVistasEspeciales_();
@@ -1570,7 +1584,7 @@
 
     async function abrirVistaCompras() {
       document.querySelector('.container').style.display = 'none';
-      document.getElementById('bannerModoProveedor').style.display = 'none';
+      desactivarModoProveedor_();
       ocultarVistasEspeciales_();
       document.getElementById('vistaCompras').style.display = 'block';
       document.getElementById('buscarProductoCompras').value = '';
@@ -1642,7 +1656,7 @@
 
     async function abrirArmarPedido() {
       document.querySelector('.container').style.display = 'none';
-      document.getElementById('bannerModoProveedor').style.display = 'none';
+      desactivarModoProveedor_();
       ocultarVistasEspeciales_();
       document.getElementById('vistaArmarPedido').style.display = 'block';
       document.getElementById('resultadoPedidoContenido').innerHTML = '';
