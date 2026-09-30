@@ -155,6 +155,7 @@
       <div style="display:flex; gap:8px; flex-shrink:0;">
         <button id="btnModoProveedor" style="flex-shrink:0; background:rgba(255,255,255,0.18); border:none; color:white; border-radius:8px; padding:10px 12px; font-size:13px; font-weight:700; cursor:pointer;">🚚 Ingreso proveedor</button>
         <button id="btnVistaCompras" style="flex-shrink:0; background:rgba(255,255,255,0.18); border:none; color:white; border-radius:8px; padding:10px 12px; font-size:13px; font-weight:700; cursor:pointer;">🛒 Compras</button>
+        <button id="btnArmarPedido" style="flex-shrink:0; background:rgba(255,255,255,0.18); border:none; color:white; border-radius:8px; padding:10px 12px; font-size:13px; font-weight:700; cursor:pointer;">📝 Armar pedido</button>
       </div>
     </div>
   </header>
@@ -333,6 +334,28 @@
     </div>
   </div>
 
+  <div id="vistaArmarPedido" style="display:none; padding:16px; padding-bottom:60px;">
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <strong style="font-size:16px;">📝 Armar pedido a proveedor</strong>
+        <button id="btnCerrarArmarPedido" style="background:#e5e7eb; border:none; border-radius:8px; padding:8px 12px; font-weight:600; cursor:pointer;">← Volver</button>
+      </div>
+
+      <select id="selectProveedorPedido" style="width:100%; padding:10px; border:1px solid var(--border); border-radius:10px; font-size:14px; margin-bottom:10px;">
+        <option value="">— Elegir proveedor —</option>
+      </select>
+
+      <label style="font-size:12px; color:var(--muted); display:block; margin-bottom:4px;">Pegá acá las ventas (copiado de Excel: Código, Cantidad vendida — una fila por producto)</label>
+      <textarea id="textareaVentas" rows="6" placeholder="7790070106209	12&#10;7793147001742	6" style="width:100%; padding:10px; border:1px solid var(--border); border-radius:10px; font-size:13px; font-family:monospace; margin-bottom:10px;"></textarea>
+
+      <button id="btnCalcularPedido" class="btn btn-primary" style="margin-top:0;">Calcular pedido</button>
+
+      <div id="resultadoPedidoContenido" style="margin-top:14px; overflow-x:auto;"></div>
+
+      <button id="btnDescargarPedidoPDF" class="btn btn-success" style="display:none; margin-top:12px; background:#1d4ed8;">📄 Descargar PDF para el proveedor</button>
+    </div>
+  </div>
+
   <div class="modal-overlay" id="modalStock">
     <div class="modal">
       <h2>Stock actual</h2>
@@ -401,12 +424,18 @@
     // así cargar un remito es escanear + cantidad, sin pensar en dónde va.
     // Si el producto es nuevo (nunca se contó, no tiene posición principal
     // todavía), simplemente pide la posición como en el modo normal.
+    // Las vistas de pantalla completa (Compras, Armar pedido) son
+    // mutuamente excluyentes con la pantalla principal — esto asegura que
+    // activar cualquiera de las otras cierre lo que estuviera abierto,
+    // en vez de quedar superpuestas (bug que ya pasó una vez).
+    function ocultarVistasEspeciales_() {
+      document.getElementById('vistaCompras').style.display = 'none';
+      document.getElementById('vistaArmarPedido').style.display = 'none';
+    }
+
     document.getElementById('btnModoProveedor').addEventListener('click', () => {
-      // Si estabas en la vista de Compras, hay que volver a la pantalla
-      // principal primero — antes el banner de proveedor aparecía ARRIBA
-      // de Compras en vez de reemplazarla.
-      if (document.getElementById('vistaCompras').style.display !== 'none') {
-        document.getElementById('vistaCompras').style.display = 'none';
+      if (document.getElementById('vistaCompras').style.display !== 'none' || document.getElementById('vistaArmarPedido').style.display !== 'none') {
+        ocultarVistasEspeciales_();
         document.querySelector('.container').style.display = 'block';
       }
       modoProveedor = !modoProveedor;
@@ -1629,6 +1658,7 @@
     async function abrirVistaCompras() {
       document.querySelector('.container').style.display = 'none';
       document.getElementById('bannerModoProveedor').style.display = 'none';
+      ocultarVistasEspeciales_();
       document.getElementById('vistaCompras').style.display = 'block';
       document.getElementById('buscarProductoCompras').value = '';
 
@@ -1677,6 +1707,254 @@
 
     document.getElementById('selectProveedorCompras').addEventListener('change', renderizarVistaCompras_);
     document.getElementById('buscarProductoCompras').addEventListener('input', renderizarVistaCompras_);
+
+    // ---------------- ARMAR PEDIDO A PROVEEDOR ----------------
+    // Flujo: elegís proveedor -> pegás ventas (Código + Cantidad, copiado
+    // de Excel) -> se calcula cuánto pedir de cada producto (vendido +
+    // colchón - stock actual) -> se puede editar cada fila a mano, elegir
+    // unidades o cajas si el producto tiene un bulto asociado, y guardar
+    // el criterio (colchón) de cada producto+proveedor para la próxima
+    // vez -> se descarga un PDF con el pedido final.
+    let filasPedidoActual = [];
+    let bultosPorCodigoBase = null; // cache: codigoBase -> {codigoBulto, unidadesPorBulto}
+
+    document.getElementById('btnArmarPedido').addEventListener('click', abrirArmarPedido);
+    document.getElementById('btnCerrarArmarPedido').addEventListener('click', () => {
+      document.getElementById('vistaArmarPedido').style.display = 'none';
+      document.querySelector('.container').style.display = 'block';
+      if (modoProveedor) document.getElementById('bannerModoProveedor').style.display = 'block';
+    });
+
+    async function abrirArmarPedido() {
+      document.querySelector('.container').style.display = 'none';
+      document.getElementById('bannerModoProveedor').style.display = 'none';
+      ocultarVistasEspeciales_();
+      document.getElementById('vistaArmarPedido').style.display = 'block';
+      document.getElementById('resultadoPedidoContenido').innerHTML = '';
+      document.getElementById('btnDescargarPedidoPDF').style.display = 'none';
+      await poblarSelectProveedores_(document.getElementById('selectProveedorPedido'));
+    }
+
+    async function cargarBultosReverso_() {
+      const snap = await getDocs(collection(db, 'bultos'));
+      const mapa = {};
+      snap.forEach(d => {
+        const data = d.data();
+        if (data.codigoBase) mapa[data.codigoBase] = { codigoBulto: d.id, unidadesPorBulto: Number(data.unidadesPorBulto) || 1 };
+      });
+      bultosPorCodigoBase = mapa;
+    }
+
+    // El "criterio de compra" (si se calcula directo o con colchón, y
+    // cuánto) queda guardado por proveedor+código — cada uno puede tener
+    // un comportamiento distinto, así que no hay una fórmula única global.
+    async function cargarCriteriosProveedor_(proveedor) {
+      const mapa = {};
+      try {
+        const q = query(collection(db, 'criteriosCompra'), where('proveedor', '==', proveedor));
+        const snap = await getDocs(q);
+        snap.forEach(d => {
+          const data = d.data();
+          mapa[data.codigo] = { colchon: Number(data.colchon) || 0 };
+        });
+      } catch (err) {
+        console.error('Error cargando criterios de compra', err);
+      }
+      return mapa;
+    }
+
+    document.getElementById('btnCalcularPedido').addEventListener('click', calcularPedido_);
+
+    async function calcularPedido_() {
+      const proveedor = document.getElementById('selectProveedorPedido').value;
+      if (!proveedor) { mostrarToast('Elegí un proveedor primero', true); return; }
+      const texto = document.getElementById('textareaVentas').value.trim();
+      if (!texto) { mostrarToast('Pegá las ventas primero', true); return; }
+
+      const btn = document.getElementById('btnCalcularPedido');
+      btn.disabled = true;
+      btn.textContent = 'Calculando...';
+
+      try {
+        // 1) Parsear lo pegado: "codigo<TAB>cantidad" por línea (tal cual
+        // queda al copiar dos columnas de Excel y pegarlas acá).
+        const ventasPorCodigo = {};
+        texto.split('\n').forEach(linea => {
+          const limpia = linea.trim();
+          if (!limpia) return;
+          const partes = limpia.split(/\t+/);
+          let codigo, cantidad;
+          if (partes.length >= 2) {
+            codigo = partes[0].trim();
+            cantidad = parseFloat(partes[1].replace(',', '.'));
+          } else {
+            const partesEsp = limpia.split(/\s+/);
+            if (partesEsp.length >= 2) {
+              codigo = partesEsp[0];
+              cantidad = parseFloat(partesEsp[partesEsp.length - 1].replace(',', '.'));
+            }
+          }
+          if (codigo && !isNaN(cantidad)) ventasPorCodigo[codigo] = cantidad;
+        });
+
+        if (!Object.keys(ventasPorCodigo).length) {
+          mostrarToast('No pude leer ninguna fila — revisá que sea Código y Cantidad, separados por tab', true);
+          return;
+        }
+
+        if (!productosComprasMaestro) await cargarProductosCompras_();
+        if (!bultosPorCodigoBase) await cargarBultosReverso_();
+        const criterios = await cargarCriteriosProveedor_(proveedor);
+
+        const productosPorCodigo = {};
+        productosComprasMaestro.filter(p => p.proveedor === proveedor).forEach(p => { productosPorCodigo[p.codigo] = p; });
+
+        filasPedidoActual = Object.keys(ventasPorCodigo).map(codigo => {
+          const vendido = ventasPorCodigo[codigo];
+          const prod = productosPorCodigo[codigo];
+          if (!prod) {
+            return { codigo, producto: '(no encontrado en este proveedor)', vendido, sinMatch: true };
+          }
+          const stock = prod.tieneAlgunaPosicion ? (Number(prod.stockTotal) || 0) : 0;
+          const colchon = (criterios[codigo] && criterios[codigo].colchon) || 0;
+          const sugerido = Math.max(0, Math.round(vendido + colchon - stock));
+          return {
+            codigo, producto: prod.producto, vendido, stock, colchon,
+            cantidadPedir: sugerido, unidad: 'unidades',
+            bulto: bultosPorCodigoBase[codigo] || null
+          };
+        });
+
+        renderizarPedido_();
+      } catch (err) {
+        mostrarToast('Error calculando: ' + err.message, true);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Calcular pedido';
+      }
+    }
+
+    function renderizarPedido_() {
+      const cont = document.getElementById('resultadoPedidoContenido');
+      if (!filasPedidoActual.length) { cont.innerHTML = '<div class="empty-state">Sin filas</div>'; document.getElementById('btnDescargarPedidoPDF').style.display = 'none'; return; }
+
+      let html = '<table style="width:100%; border-collapse:collapse; font-size:13px;">';
+      html += '<tr><th style="text-align:left; padding:6px 4px;">Código</th><th style="text-align:left; padding:6px 4px;">Producto</th><th style="text-align:left; padding:6px 4px;">Stock</th><th style="text-align:left; padding:6px 4px;">Vendido</th><th style="text-align:left; padding:6px 4px;">Colchón</th><th style="text-align:left; padding:6px 4px;">A pedir</th><th style="text-align:left; padding:6px 4px;">Unidad</th><th></th></tr>';
+
+      filasPedidoActual.forEach((f, idx) => {
+        if (f.sinMatch) {
+          html += `<tr style="background:#fef2f2;"><td style="padding:6px 4px;">${escapeHtml(f.codigo)}</td><td colspan="7" style="padding:6px 4px; color:#dc2626;">No encontrado en este proveedor (vendido: ${f.vendido}) — revisá el código</td></tr>`;
+          return;
+        }
+        const opcionesUnidad = f.bulto
+          ? `<select data-idx="${idx}" class="select-unidad-pedido" style="padding:6px; border:1px solid var(--border); border-radius:6px;">
+               <option value="unidades" ${f.unidad === 'unidades' ? 'selected' : ''}>Unidades</option>
+               <option value="bultos" ${f.unidad === 'bultos' ? 'selected' : ''}>Cajas (x${f.bulto.unidadesPorBulto})</option>
+             </select>`
+          : '<span style="color:var(--muted); font-size:11px;">unidades</span>';
+        html += `<tr>
+          <td style="padding:6px 4px;">${escapeHtml(f.codigo)}</td>
+          <td style="padding:6px 4px;">${escapeHtml(f.producto)}</td>
+          <td style="padding:6px 4px;">${f.stock}</td>
+          <td style="padding:6px 4px;">${f.vendido}</td>
+          <td style="padding:6px 4px;"><input type="number" class="input-colchon-pedido" data-idx="${idx}" value="${f.colchon}" style="width:60px; padding:6px; border:1px solid var(--border); border-radius:6px;"></td>
+          <td style="padding:6px 4px;"><input type="number" class="input-cantidad-pedido" data-idx="${idx}" value="${f.cantidadPedir}" style="width:70px; padding:6px; border:1px solid var(--border); border-radius:6px; font-weight:700;"></td>
+          <td style="padding:6px 4px;">${opcionesUnidad}</td>
+          <td style="padding:6px 4px;"><button class="btn-guardar-criterio" data-idx="${idx}" title="Guardar este criterio para la próxima vez" style="background:none; border:none; font-size:15px; cursor:pointer;">💾</button></td>
+        </tr>`;
+      });
+      html += '</table>';
+      cont.innerHTML = html;
+      document.getElementById('btnDescargarPedidoPDF').style.display = 'inline-block';
+    }
+
+    document.getElementById('resultadoPedidoContenido').addEventListener('input', (e) => {
+      const idx = e.target.dataset.idx;
+      if (idx === undefined) return;
+      const fila = filasPedidoActual[idx];
+      if (e.target.classList.contains('input-colchon-pedido')) {
+        fila.colchon = parseFloat(e.target.value) || 0;
+        fila.cantidadPedir = Math.max(0, Math.round(fila.vendido + fila.colchon - fila.stock));
+        const inputCantidad = document.querySelector(`.input-cantidad-pedido[data-idx="${idx}"]`);
+        if (inputCantidad) inputCantidad.value = fila.cantidadPedir;
+      } else if (e.target.classList.contains('input-cantidad-pedido')) {
+        fila.cantidadPedir = parseFloat(e.target.value) || 0;
+      }
+    });
+
+    document.getElementById('resultadoPedidoContenido').addEventListener('change', (e) => {
+      const idx = e.target.dataset.idx;
+      if (idx === undefined) return;
+      if (e.target.classList.contains('select-unidad-pedido')) {
+        filasPedidoActual[idx].unidad = e.target.value;
+      }
+    });
+
+    document.getElementById('resultadoPedidoContenido').addEventListener('click', async (e) => {
+      const btnGuardar = e.target.closest('.btn-guardar-criterio');
+      if (!btnGuardar) return;
+      const idx = btnGuardar.dataset.idx;
+      const fila = filasPedidoActual[idx];
+      const proveedor = document.getElementById('selectProveedorPedido').value;
+      try {
+        const id = `${proveedor}|${fila.codigo}`.replace(/\//g, '_').substring(0, 300);
+        await setDoc(doc(db, 'criteriosCompra', id), {
+          proveedor, codigo: fila.codigo, colchon: fila.colchon,
+          actualizado: serverTimestamp()
+        });
+        mostrarToast('Criterio guardado para ' + fila.producto);
+      } catch (err) {
+        mostrarToast('Error guardando criterio: ' + err.message, true);
+      }
+    });
+
+    document.getElementById('btnDescargarPedidoPDF').addEventListener('click', generarPedidoPDF_);
+
+    async function generarPedidoPDF_() {
+      const proveedor = document.getElementById('selectProveedorPedido').value;
+      const filasValidas = filasPedidoActual.filter(f => !f.sinMatch && f.cantidadPedir > 0);
+      if (!filasValidas.length) { mostrarToast('No hay ninguna cantidad a pedir mayor a 0', true); return; }
+
+      const btn = document.getElementById('btnDescargarPedidoPDF');
+      btn.disabled = true;
+      btn.textContent = 'Generando...';
+      try {
+        const { jsPDF } = await import('https://cdn.jsdelivr.net/npm/jspdf@2.5.1/+esm');
+        const pdf = new jsPDF();
+        pdf.setFontSize(14);
+        pdf.text(`Pedido a ${proveedor}`, 14, 16);
+        pdf.setFontSize(10);
+        pdf.text(`Fecha: ${new Date().toLocaleDateString('es-AR')}`, 14, 23);
+
+        let y = 34;
+        pdf.setFont(undefined, 'bold');
+        pdf.text('Código', 14, y);
+        pdf.text('Producto', 45, y);
+        pdf.text('Cantidad', 170, y);
+        pdf.setFont(undefined, 'normal');
+        y += 4;
+        pdf.line(14, y, 196, y);
+        y += 6;
+
+        filasValidas.forEach(f => {
+          if (y > 280) { pdf.addPage(); y = 20; }
+          const cantidadTexto = (f.unidad === 'bultos' && f.bulto)
+            ? `${Math.ceil(f.cantidadPedir / f.bulto.unidadesPorBulto)} caja(s)`
+            : `${f.cantidadPedir} un.`;
+          pdf.text(String(f.codigo), 14, y);
+          pdf.text(String(f.producto).substring(0, 58), 45, y);
+          pdf.text(cantidadTexto, 170, y);
+          y += 6;
+        });
+
+        pdf.save(`pedido_${proveedor.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0, 10)}.pdf`);
+      } catch (err) {
+        mostrarToast('Error generando el PDF: ' + err.message, true);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '📄 Descargar PDF para el proveedor';
+      }
+    }
 
     // ---------------- FILTRO POR PROVEEDOR EN LA PANTALLA PRINCIPAL ----------------
     // Mismo cache/lógica que la vista Compras, pero embebido en la
