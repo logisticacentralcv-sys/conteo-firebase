@@ -276,6 +276,17 @@
             style="flex:1; padding:12px; border:1px solid var(--border); border-radius:10px; font-size:16px;">
           <button class="btn btn-secondary" id="btnUsarCodigoBultoManual" style="width:auto; margin-top:0; padding:12px 18px;">Usar</button>
         </div>
+
+        <div style="display:flex; align-items:center; gap:8px; margin: 14px 0 6px;">
+          <div style="flex:1; height:1px; background:var(--border);"></div>
+          <span style="font-size:12px; color:var(--muted);">o, si la caja no tiene su propio código</span>
+          <div style="flex:1; height:1px; background:var(--border);"></div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input type="number" id="inputUnidadesPorBultoDirecto" min="1" placeholder="Unidades por bulto (ej: 10)"
+            style="flex:1; padding:12px; border:1px solid var(--border); border-radius:10px; font-size:16px;">
+          <button class="btn btn-secondary" id="btnGuardarBultoDirecto" style="width:auto; margin-top:0; padding:12px 18px;">Guardar</button>
+        </div>
       </div>
       <div id="abPaso2" style="display:none;">
         <div class="field">
@@ -1413,6 +1424,32 @@
       mostrarPaso2Bulto(codigo);
     });
     document.getElementById('btnGuardarBulto').addEventListener('click', guardarBulto);
+    document.getElementById('btnGuardarBultoDirecto').addEventListener('click', guardarBultoDirecto);
+
+    // Para cuando el bulto/caja no tiene su propio código de barras para
+    // escanear — se guarda directo en el producto ("unidadesPorBulto"),
+    // sin pasar por la colección "bultos" (que requiere un código de
+    // caja distinto). Lo usan tanto el conteo como "Armar pedido".
+    async function guardarBultoDirecto() {
+      const unidadesPorBulto = parseInt(document.getElementById('inputUnidadesPorBultoDirecto').value, 10);
+      if (!unidadesPorBulto || unidadesPorBulto <= 0) { mostrarToast("Ingresá cuántas unidades trae el bulto", true); return; }
+
+      const btn = document.getElementById('btnGuardarBultoDirecto');
+      btn.disabled = true;
+      btn.textContent = 'Guardando...';
+      try {
+        await setDoc(doc(db, 'productos', productoActual.codigo), {
+          unidadesPorBulto: unidadesPorBulto
+        }, { merge: true });
+        mostrarToast("Guardado ✓ (" + unidadesPorBulto + " unidades por bulto)");
+        document.getElementById('asociarBultoBox').style.display = 'none';
+      } catch (err) {
+        mostrarToast("Error: " + err.message, true);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Guardar';
+      }
+    }
 
     function abrirAsociarBulto() {
       productoBox.classList.remove('show');
@@ -1692,11 +1729,13 @@
           const data = d.data();
           productosComprasMaestro.push({
             codigo: d.id,
+            codigoInterno: data.codigoInterno || '',
             producto: data.producto || '(sin nombre)',
             proveedor: data.proveedor || '',
             stockTotal: data.stockTotal,
             tieneAlgunaPosicion: codigosConPosicion.has(d.id),
-            posicionPrincipal: data.posicionPrincipal || ''
+            posicionPrincipal: data.posicionPrincipal || '',
+            unidadesPorBulto: data.unidadesPorBulto || null
           });
         });
       } catch (err) {
@@ -1807,21 +1846,31 @@
         const criterios = await cargarCriteriosProveedor_(proveedor);
 
         const productosPorCodigo = {};
-        productosComprasMaestro.filter(p => p.proveedor === proveedor).forEach(p => { productosPorCodigo[p.codigo] = p; });
+        const productosPorCodigoInterno = {};
+        productosComprasMaestro.filter(p => p.proveedor === proveedor).forEach(p => {
+          productosPorCodigo[p.codigo] = p;
+          if (p.codigoInterno) productosPorCodigoInterno[p.codigoInterno] = p;
+        });
 
-        filasPedidoActual = Object.keys(ventasPorCodigo).map(codigo => {
-          const vendido = ventasPorCodigo[codigo];
-          const prod = productosPorCodigo[codigo];
+        filasPedidoActual = Object.keys(ventasPorCodigo).map(codigoPegado => {
+          const vendido = ventasPorCodigo[codigoPegado];
+          // Puede venir código de barras o código interno — se prueba
+          // primero como código de barras (es el ID del documento) y si
+          // no matchea nada, se prueba como código interno.
+          const prod = productosPorCodigo[codigoPegado] || productosPorCodigoInterno[codigoPegado];
           if (!prod) {
-            return { codigo, producto: '(no encontrado en este proveedor)', vendido, sinMatch: true };
+            return { codigo: codigoPegado, producto: '(no encontrado en este proveedor)', vendido, sinMatch: true };
           }
+          const codigo = prod.codigo; // de acá en más, siempre el código de barras real (clave de Firestore)
           const stock = prod.tieneAlgunaPosicion ? (Number(prod.stockTotal) || 0) : 0;
           const colchon = (criterios[codigo] && criterios[codigo].colchon) || 0;
           const sugerido = Math.max(0, Math.round(vendido + colchon - stock));
+          // Bulto: primero el de código propio (colección "bultos"); si no
+          // hay, el declarado directo en el producto (sin código propio).
+          const bulto = bultosPorCodigoBase[codigo] || (prod.unidadesPorBulto ? { unidadesPorBulto: prod.unidadesPorBulto, directo: true } : null);
           return {
-            codigo, producto: prod.producto, vendido, stock, colchon,
-            cantidadPedir: sugerido, unidad: 'unidades',
-            bulto: bultosPorCodigoBase[codigo] || null
+            codigo, codigoPegado, producto: prod.producto, vendido, stock, colchon,
+            cantidadPedir: sugerido, unidad: 'unidades', bulto
           };
         });
 
