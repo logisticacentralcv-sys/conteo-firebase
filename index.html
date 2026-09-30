@@ -1809,7 +1809,80 @@
       return mapa;
     }
 
+    document.getElementById('selectProveedorPedido').addEventListener('change', () => {
+      const proveedor = document.getElementById('selectProveedorPedido').value;
+      if (!proveedor) {
+        filasPedidoActual = [];
+        document.getElementById('resultadoPedidoContenido').innerHTML = '';
+        document.getElementById('btnDescargarPedidoPDF').style.display = 'none';
+        return;
+      }
+      mostrarProductosProveedor_(proveedor);
+    });
+
     document.getElementById('btnCalcularPedido').addEventListener('click', calcularPedido_);
+
+    // Núcleo compartido: arma UNA fila por cada producto del proveedor
+    // (no solo los que vinieron en las ventas pegadas) y, si hay ventas,
+    // completa "Vendido" y recalcula el sugerido para los que matchean.
+    // Así se ve el catálogo completo apenas elegís el proveedor, y pegar
+    // las ventas después solo RELLENA esa misma tabla, no la reemplaza.
+    async function construirFilasProveedor_(proveedor, ventasPorCodigo) {
+      if (!productosComprasMaestro) await cargarProductosCompras_();
+      if (!bultosPorCodigoBase) await cargarBultosReverso_();
+      const criterios = await cargarCriteriosProveedor_(proveedor);
+
+      const productosDelProveedor = productosComprasMaestro.filter(p => p.proveedor === proveedor);
+      const productosPorCodigo = {};
+      const productosPorCodigoInterno = {};
+      productosDelProveedor.forEach(p => {
+        productosPorCodigo[p.codigo] = p;
+        if (p.codigoInterno) productosPorCodigoInterno[p.codigoInterno] = p;
+      });
+
+      // Para no perder pegados que no matchean con nada de este proveedor
+      const codigosUsados = new Set();
+
+      const filas = productosDelProveedor.map(prod => {
+        const codigo = prod.codigo;
+        // El código pegado puede ser el de barras o el interno — busco
+        // por los dos antes de darlo por no vendido.
+        let vendido = 0;
+        if (Object.prototype.hasOwnProperty.call(ventasPorCodigo, codigo)) {
+          vendido = ventasPorCodigo[codigo]; codigosUsados.add(codigo);
+        } else if (prod.codigoInterno && Object.prototype.hasOwnProperty.call(ventasPorCodigo, prod.codigoInterno)) {
+          vendido = ventasPorCodigo[prod.codigoInterno]; codigosUsados.add(prod.codigoInterno);
+        }
+
+        const stock = prod.tieneAlgunaPosicion ? (Number(prod.stockTotal) || 0) : 0;
+        const colchon = (criterios[codigo] && criterios[codigo].colchon) || 0;
+        const sugerido = Math.max(0, Math.round(vendido + colchon - stock));
+        const bulto = bultosPorCodigoBase[codigo] || (prod.unidadesPorBulto ? { unidadesPorBulto: prod.unidadesPorBulto, directo: true } : null);
+
+        return {
+          codigo, producto: prod.producto, vendido, stock, colchon,
+          cantidadPedir: sugerido, unidad: 'unidades', bulto
+        };
+      });
+
+      // Códigos pegados que no pertenecen a ningún producto de este proveedor
+      const sinMatch = Object.keys(ventasPorCodigo)
+        .filter(c => !codigosUsados.has(c))
+        .map(c => ({ codigo: c, producto: '(no encontrado en este proveedor)', vendido: ventasPorCodigo[c], sinMatch: true }));
+
+      return filas.concat(sinMatch);
+    }
+
+    async function mostrarProductosProveedor_(proveedor) {
+      const cont = document.getElementById('resultadoPedidoContenido');
+      cont.innerHTML = '<div class="cargando">Cargando productos del proveedor...</div>';
+      try {
+        filasPedidoActual = await construirFilasProveedor_(proveedor, {});
+        renderizarPedido_();
+      } catch (err) {
+        cont.innerHTML = `<div class="empty-state">Error: ${err.message}</div>`;
+      }
+    }
 
     async function calcularPedido_() {
       const proveedor = document.getElementById('selectProveedorPedido').value;
@@ -1822,7 +1895,7 @@
       btn.textContent = 'Calculando...';
 
       try {
-        // 1) Parsear lo pegado: "codigo<TAB>cantidad" por línea (tal cual
+        // Parsear lo pegado: "codigo<TAB>cantidad" por línea (tal cual
         // queda al copiar dos columnas de Excel y pegarlas acá).
         const ventasPorCodigo = {};
         texto.split('\n').forEach(linea => {
@@ -1848,39 +1921,7 @@
           return;
         }
 
-        if (!productosComprasMaestro) await cargarProductosCompras_();
-        if (!bultosPorCodigoBase) await cargarBultosReverso_();
-        const criterios = await cargarCriteriosProveedor_(proveedor);
-
-        const productosPorCodigo = {};
-        const productosPorCodigoInterno = {};
-        productosComprasMaestro.filter(p => p.proveedor === proveedor).forEach(p => {
-          productosPorCodigo[p.codigo] = p;
-          if (p.codigoInterno) productosPorCodigoInterno[p.codigoInterno] = p;
-        });
-
-        filasPedidoActual = Object.keys(ventasPorCodigo).map(codigoPegado => {
-          const vendido = ventasPorCodigo[codigoPegado];
-          // Puede venir código de barras o código interno — se prueba
-          // primero como código de barras (es el ID del documento) y si
-          // no matchea nada, se prueba como código interno.
-          const prod = productosPorCodigo[codigoPegado] || productosPorCodigoInterno[codigoPegado];
-          if (!prod) {
-            return { codigo: codigoPegado, producto: '(no encontrado en este proveedor)', vendido, sinMatch: true };
-          }
-          const codigo = prod.codigo; // de acá en más, siempre el código de barras real (clave de Firestore)
-          const stock = prod.tieneAlgunaPosicion ? (Number(prod.stockTotal) || 0) : 0;
-          const colchon = (criterios[codigo] && criterios[codigo].colchon) || 0;
-          const sugerido = Math.max(0, Math.round(vendido + colchon - stock));
-          // Bulto: primero el de código propio (colección "bultos"); si no
-          // hay, el declarado directo en el producto (sin código propio).
-          const bulto = bultosPorCodigoBase[codigo] || (prod.unidadesPorBulto ? { unidadesPorBulto: prod.unidadesPorBulto, directo: true } : null);
-          return {
-            codigo, codigoPegado, producto: prod.producto, vendido, stock, colchon,
-            cantidadPedir: sugerido, unidad: 'unidades', bulto
-          };
-        });
-
+        filasPedidoActual = await construirFilasProveedor_(proveedor, ventasPorCodigo);
         renderizarPedido_();
       } catch (err) {
         mostrarToast('Error calculando: ' + err.message, true);
